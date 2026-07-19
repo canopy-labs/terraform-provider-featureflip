@@ -1,0 +1,1 @@
+terraform import featureflip_flag_environment.new_checkout_prod web/new-checkout/production

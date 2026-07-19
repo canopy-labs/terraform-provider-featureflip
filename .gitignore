@@ -1,0 +1,6 @@
+terraform-provider-featureflip
+dist/
+.env.acceptance
+*.tfstate*
+.terraform/
+TODO.md

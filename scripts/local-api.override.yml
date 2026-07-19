@@ -1,0 +1,16 @@
+# Local-only override consumed by scripts/local-api.sh via `docker compose -f
+# .../docker-compose.yml -f local-api.override.yml`. It never touches the
+# feature-flagger checkout itself.
+#
+# Why this exists: the public /api/v1 surface (including GET /orgs/{org},
+# which this provider's Configure now hits as a fail-fast check, and which the
+# Step 10 smoke test curls directly) is gated behind the
+# `Features:PublicManagementApi` config flag. That flag defaults to false in
+# apps/management-api/src/Management.Api/appsettings*.json and is never
+# flipped on by docker-compose.yml, so every /api/v1/* request 404s
+# (PublicApiAvailabilityMiddleware) until it's enabled. This override sets it
+# to true for the compose project started by local-api.sh only.
+services:
+  management-api:
+    environment:
+      - Features__PublicManagementApi=true

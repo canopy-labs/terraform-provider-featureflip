@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet
+        run: go vet ./...
+      # .goreleaser.yml runs `go mod tidy` in a before-hook, and GoReleaser aborts on
+      # a dirty tree — catch an untidy go.mod here rather than at release time.
+      - name: go mod tidy check
+        run: go mod tidy -diff
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run tests
+        run: go test ./internal/... -count=1 -v
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # docs/ is the tree the Terraform Registry renders, generated from the provider
+      # schemas + examples/. A schema change without `make docs` silently ships stale
+      # public docs. tfplugindocs self-installs terraform via hc-install, so no
+      # setup-terraform step is needed.
+      - name: Regenerate docs
+        run: make docs
+      # `git add -A` first: make docs rebuilds the tree from scratch, so a brand-new
+      # resource's page lands UNTRACKED and a plain `git diff` would exit 0 — passing
+      # the gate exactly when a Registry page is missing.
+      - name: Fail if docs drifted
+        run: |
+          git add -A docs/
+          if ! git diff --cached --exit-code -- docs/; then
+            echo "::error::docs/ is out of sync with the provider schemas. Run 'make docs' and commit the result."
+            exit 1
+          fi

@@ -1,0 +1,49 @@
+name: Acceptance
+
+# Terraform acceptance tests create and destroy real resources against a live
+# management-api (a dedicated test org on the dev instance). Deliberately NO
+# pull_request trigger: the token is a repo secret, GitHub withholds secrets from
+# fork PRs, and this keeps untrusted PR code away from the token entirely.
+# Maintainers validate a branch on demand via the Run workflow button.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/acceptance.yml'
+  schedule:
+    - cron: '0 6 * * *'   # nightly 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  # The test org is shared state and the token is rate-limited (300 req/min), so
+  # never run two acceptance jobs against it at once — queue instead of cancel.
+  group: acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    # Stays a no-op (skipped, not failed) until the test org is wired up. Job-level
+    # `if` can't read `secrets`, so gate on the org var as the configured-signal;
+    # set it alongside the FEATUREFLIP_TOKEN secret to activate acceptance.
+    if: vars.FEATUREFLIP_ORGANIZATION != ''
+    env:
+      FEATUREFLIP_BASE_URL: https://api-dev.featureflip.io   # switch to api.featureflip.io for prod
+      FEATUREFLIP_ORGANIZATION: ${{ vars.FEATUREFLIP_ORGANIZATION }}
+      FEATUREFLIP_TOKEN: ${{ secrets.FEATUREFLIP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      # CI sets the three env vars directly from repo secrets/vars, so it doesn't
+      # need `.env.acceptance` (that's the local `make testacc` path).
+      - name: Acceptance tests
+        run: TF_ACC=1 go test ./internal/provider -count=1 -v -timeout 30m
