@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring up the FeatureFlip management API from a feature-flagger monorepo checkout
+# Bring up the Featureflip management API from a feature-flagger monorepo checkout
 # (postgres + migrations + API) and seed it for local acceptance tests.
 #
 # This is a standalone repo, so it can't see the monorepo — point FEATUREFLIP_REPO

@@ -39,7 +39,7 @@ func (r *projectResource) Metadata(_ context.Context, req resource.MetadataReque
 
 func (r *projectResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A FeatureFlip project. Import with `terraform import featureflip_project.example <project-key>`.",
+		Description: "A Featureflip project. Import with `terraform import featureflip_project.example <project-key>`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:      true,

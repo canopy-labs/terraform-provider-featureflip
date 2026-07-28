@@ -3,17 +3,17 @@
 page_title: "featureflip_environment Resource - featureflip"
 subcategory: ""
 description: |-
-  An environment within a FeatureFlip project. Import with <project>/<key>.
+  An environment within a Featureflip project. Import with <project>/<key>.
 ---
 
 # featureflip_environment (Resource)
 
-An environment within a FeatureFlip project. Import with `<project>/<key>`.
+An environment within a Featureflip project. Import with `<project>/<key>`.
 
 ## Example Usage
 
 ```terraform
-# NOTE: FeatureFlip auto-creates development/staging/production environments
+# NOTE: Featureflip auto-creates development/staging/production environments
 # on every new project — import those (see import.sh) rather than declaring
 # them, and use this resource for additional environments.
 resource "featureflip_environment" "qa" {

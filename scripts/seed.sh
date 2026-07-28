@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seed a FeatureFlip instance with a fresh org + Admin service token for
+# Seed a Featureflip instance with a fresh org + Admin service token for
 # provider acceptance tests. Writes .env.acceptance in the repo root.
 set -euo pipefail
 

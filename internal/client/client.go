@@ -1,4 +1,4 @@
-// Package client is a minimal hand-written client for the FeatureFlip
+// Package client is a minimal hand-written client for the Featureflip
 // public Management API (/api/v1).
 package client
 
@@ -59,7 +59,7 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	msg := fmt.Sprintf("FeatureFlip API error %d (%s): %s", e.StatusCode, e.Code, e.Message)
+	msg := fmt.Sprintf("Featureflip API error %d (%s): %s", e.StatusCode, e.Code, e.Message)
 	if len(e.DidYouMean) > 0 {
 		msg += fmt.Sprintf(" — did you mean: %s?", strings.Join(e.DidYouMean, ", "))
 	}

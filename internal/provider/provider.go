@@ -40,7 +40,7 @@ func (p *featureflipProvider) Metadata(_ context.Context, _ provider.MetadataReq
 
 func (p *featureflipProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manage FeatureFlip projects, environments, feature flags, targeting, segments, and SDK keys.",
+		Description: "Manage Featureflip projects, environments, feature flags, targeting, segments, and SDK keys.",
 		Attributes: map[string]schema.Attribute{
 			"organization": schema.StringAttribute{
 				Optional:    true,
@@ -49,7 +49,7 @@ func (p *featureflipProvider) Schema(_ context.Context, _ provider.SchemaRequest
 			"token": schema.StringAttribute{
 				Optional:    true,
 				Sensitive:   true,
-				Description: "API token (ffs_… service token recommended, or ffp_… personal access token). May also be set via FEATUREFLIP_TOKEN. Tokens are created in the FeatureFlip dashboard.",
+				Description: "API token (ffs_… service token recommended, or ffp_… personal access token). May also be set via FEATUREFLIP_TOKEN. Tokens are created in the Featureflip dashboard.",
 			},
 			"base_url": schema.StringAttribute{
 				Optional:    true,
@@ -90,10 +90,10 @@ func (p *featureflipProvider) Configure(ctx context.Context, req provider.Config
 	switch {
 	case token == "":
 		resp.Diagnostics.AddAttributeError(path.Root("token"), "Missing API token",
-			"Set the token attribute or FEATUREFLIP_TOKEN. Create a service token in the FeatureFlip dashboard (Organization Settings → Service Tokens).")
+			"Set the token attribute or FEATUREFLIP_TOKEN. Create a service token in the Featureflip dashboard (Organization Settings → Service Tokens).")
 	case !tokenFormatOK(token):
 		resp.Diagnostics.AddAttributeError(path.Root("token"), "Invalid API token",
-			"FeatureFlip tokens start with ffs_ (service token) or ffp_ (personal access token).")
+			"Featureflip tokens start with ffs_ (service token) or ffp_ (personal access token).")
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -105,7 +105,7 @@ func (p *featureflipProvider) Configure(ctx context.Context, req provider.Config
 		return
 	}
 	if _, err := c.GetOrganization(ctx, org); err != nil {
-		resp.Diagnostics.AddError("FeatureFlip authentication failed",
+		resp.Diagnostics.AddError("Featureflip authentication failed",
 			fmt.Sprintf("GET /orgs/%s against %s failed: %s\n\nVerify the token is valid (not revoked or expired), that the organization slug is correct, and that the token belongs to this organization.", org, baseURL, err))
 		return
 	}
