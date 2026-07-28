@@ -3,12 +3,12 @@
 page_title: "featureflip_project Resource - featureflip"
 subcategory: ""
 description: |-
-  A FeatureFlip project. Import with terraform import featureflip_project.example <project-key>.
+  A Featureflip project. Import with terraform import featureflip_project.example <project-key>.
 ---
 
 # featureflip_project (Resource)
 
-A FeatureFlip project. Import with `terraform import featureflip_project.example <project-key>`.
+A Featureflip project. Import with `terraform import featureflip_project.example <project-key>`.
 
 ## Example Usage
 

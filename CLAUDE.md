@@ -1,9 +1,9 @@
 # terraform-provider-featureflip
 
-Terraform provider for FeatureFlip (Go, terraform-plugin-framework, protocol v6). This is the
+Terraform provider for Featureflip (Go, terraform-plugin-framework, protocol v6). This is the
 canonical public repo; the Terraform Registry requires it be named `terraform-provider-<type>`
 (Makefile pins `--provider-name`; .goreleaser.yml pins `project_name`; go.mod pins the module path).
-It talks to FeatureFlip's public `/api/v1` Management API and shares no code with the backend —
+It talks to Featureflip's public `/api/v1` Management API and shares no code with the backend —
 the API is the only contract between them.
 
 ## Commands

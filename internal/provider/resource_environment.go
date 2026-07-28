@@ -43,7 +43,7 @@ func (r *environmentResource) Metadata(_ context.Context, req resource.MetadataR
 
 func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "An environment within a FeatureFlip project. Import with `<project>/<key>`.",
+		Description: "An environment within a Featureflip project. Import with `<project>/<key>`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:      true,
@@ -153,7 +153,7 @@ func (r *environmentResource) Delete(ctx context.Context, req resource.DeleteReq
 	if err != nil && !client.IsNotFound(err) {
 		if client.HasCode(err, "LAST_ENVIRONMENT") {
 			resp.Diagnostics.AddError("Cannot delete the last environment",
-				"A FeatureFlip project must keep at least one environment. Create another environment before destroying this one.")
+				"A Featureflip project must keep at least one environment. Create another environment before destroying this one.")
 			return
 		}
 		resp.Diagnostics.AddError(fmt.Sprintf("Deleting featureflip_environment %q failed", state.Key.ValueString()), err.Error())
