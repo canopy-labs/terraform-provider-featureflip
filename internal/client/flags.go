@@ -23,6 +23,7 @@ type Flag struct {
 	ClientSideVisible bool        `json:"clientSideVisible"`
 	Tags              []string    `json:"tags"`
 	Variations        []Variation `json:"variations"`
+	ExpiresAtUtc      *string     `json:"expiresAtUtc"`
 }
 
 type VariationInput struct {
@@ -40,8 +41,11 @@ type CreateFlagRequest struct {
 	Tags              []string         `json:"tags"`
 	InitialVariations []VariationInput `json:"initialVariations,omitempty"`
 	ClientSideVisible bool             `json:"clientSideVisible"`
+	ExpiresAtUtc      *string          `json:"expiresAtUtc,omitempty"`
 }
 
+// UpdateFlagRequest deliberately has no expiry field: the API's flag PUT never
+// touches expiry, which only changes through SetFlagExpiry / ClearFlagExpiry.
 type UpdateFlagRequest struct {
 	Name              string   `json:"name"`
 	Description       *string  `json:"description"`
@@ -73,6 +77,20 @@ func (c *Client) GetFlag(ctx context.Context, project, key string) (*Flag, error
 
 func (c *Client) UpdateFlag(ctx context.Context, project, key string, req UpdateFlagRequest) error {
 	return c.do(ctx, http.MethodPut, c.orgPath("projects", project, "flags", key), nil, req, nil)
+}
+
+type setFlagExpiryRequest struct {
+	ExpiresAtUtc string `json:"expiresAtUtc"`
+}
+
+// SetFlagExpiry sets the flag's advisory expiry date (RFC 3339). The API
+// rejects a date that is not in the future with EXPIRY_IN_PAST.
+func (c *Client) SetFlagExpiry(ctx context.Context, project, key, expiresAtUtc string) error {
+	return c.do(ctx, http.MethodPut, c.orgPath("projects", project, "flags", key, "expiry"), nil, setFlagExpiryRequest{ExpiresAtUtc: expiresAtUtc}, nil)
+}
+
+func (c *Client) ClearFlagExpiry(ctx context.Context, project, key string) error {
+	return c.do(ctx, http.MethodDelete, c.orgPath("projects", project, "flags", key, "expiry"), nil, nil, nil)
 }
 
 func (c *Client) DeleteFlag(ctx context.Context, project, key string) error {

@@ -184,6 +184,7 @@ type featureFlagDSModel struct {
 	ClientSideVisible types.Bool   `tfsdk:"client_side_visible"`
 	Archived          types.Bool   `tfsdk:"archived"`
 	Variations        types.List   `tfsdk:"variations"`
+	ExpiresAt         types.String `tfsdk:"expires_at"`
 }
 
 func (d *featureFlagDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -203,6 +204,10 @@ func (d *featureFlagDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 			"tags":                schema.SetAttribute{Computed: true, ElementType: types.StringType},
 			"client_side_visible": schema.BoolAttribute{Computed: true},
 			"archived":            schema.BoolAttribute{Computed: true},
+			"expires_at": schema.StringAttribute{
+				Computed:    true,
+				Description: "Advisory expiry date (RFC 3339, UTC), or null when none is set.",
+			},
 			"variations": schema.ListNestedAttribute{
 				Computed: true,
 				NestedObject: schema.NestedAttributeObject{
@@ -230,7 +235,7 @@ func (d *featureFlagDataSource) Read(ctx context.Context, req datasource.ReadReq
 		resp.Diagnostics.AddError("Reading featureflip_feature_flag failed", err.Error())
 		return
 	}
-	m := flagToModel(ctx, cfg.Project.ValueString(), f, types.ListNull(types.ObjectType{AttrTypes: variationAttrTypes()}), types.SetNull(types.StringType), &resp.Diagnostics)
+	m := flagToModel(ctx, cfg.Project.ValueString(), f, types.ListNull(types.ObjectType{AttrTypes: variationAttrTypes()}), types.SetNull(types.StringType), types.StringNull(), &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -243,7 +248,7 @@ func (d *featureFlagDataSource) Read(ctx context.Context, req datasource.ReadReq
 	resp.Diagnostics.Append(resp.State.Set(ctx, featureFlagDSModel{
 		ID: m.ID, Project: m.Project, Key: m.Key, Name: m.Name, Type: m.Type,
 		Description: m.Description, Tags: m.Tags, ClientSideVisible: m.ClientSideVisible,
-		Archived: m.Archived, Variations: m.Variations,
+		Archived: m.Archived, Variations: m.Variations, ExpiresAt: m.ExpiresAt,
 	})...)
 }
 

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -100,6 +101,60 @@ resource "featureflip_feature_flag" "test" {
 					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "variations.0.value", "Welcome back!"),
 					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "variations.1.key", "loud"),
 				),
+			},
+		},
+	})
+}
+
+func TestAccFeatureFlag_expiry(t *testing.T) {
+	proj := acctest.RandomWithPrefix("tf-acc-proj")
+	flag := func(extra string) string {
+		return testAccFlagProjectConfig(proj) + fmt.Sprintf(`
+resource "featureflip_feature_flag" "test" {
+  project = featureflip_project.test.key
+  key     = "expiring"
+  name    = "Expiring"
+  type    = "Boolean"
+  %s
+}`, extra)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The API answers in UTC; an offset spelling must not read as drift.
+				Config: flag(`expires_at = "2099-01-31T02:00:00+02:00"`),
+				Check:  resource.TestCheckResourceAttr("featureflip_feature_flag.test", "expires_at", "2099-01-31T02:00:00+02:00"),
+			},
+			{
+				// Moved through PUT .../expiry alongside an ordinary flag update.
+				Config: flag(`expires_at = "2099-06-30T00:00:00Z"`) + `
+data "featureflip_feature_flag" "test" {
+  project = featureflip_feature_flag.test.project
+  key     = featureflip_feature_flag.test.key
+}`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "expires_at", "2099-06-30T00:00:00Z"),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.test", "expires_at", "2099-06-30T00:00:00Z"),
+				),
+			},
+			{
+				ResourceName:      "featureflip_feature_flag.test",
+				ImportState:       true,
+				ImportStateId:     proj + "/expiring",
+				ImportStateVerify: true,
+			},
+			{
+				// Past dates can't be rejected at plan time (plans apply later);
+				// the API refuses them on apply and the hint says what to do.
+				Config:      flag(`expires_at = "2020-01-01T00:00:00Z"`),
+				ExpectError: regexp.MustCompile(`must be in the future when it is set or changed`),
+			},
+			{
+				// Removing the attribute clears the expiry through DELETE .../expiry.
+				Config: flag(""),
+				Check:  resource.TestCheckNoResourceAttr("featureflip_feature_flag.test", "expires_at"),
 			},
 		},
 	})

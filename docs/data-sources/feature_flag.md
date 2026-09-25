@@ -32,6 +32,7 @@ data "featureflip_feature_flag" "new_checkout" {
 - `archived` (Boolean)
 - `client_side_visible` (Boolean)
 - `description` (String)
+- `expires_at` (String) Advisory expiry date (RFC 3339, UTC), or null when none is set.
 - `id` (String) The ID of this resource.
 - `name` (String)
 - `tags` (Set of String)

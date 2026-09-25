@@ -19,3 +19,13 @@ resource "featureflip_feature_flag" "banner_text" {
     { key = "variant", name = "Variant", value = "Hi there!" },
   ]
 }
+
+# A temporary flag with an expiry date. Nothing changes at evaluation time
+# when the date passes; the flag is reported as stale so it gets cleaned up.
+resource "featureflip_feature_flag" "holiday_banner" {
+  project    = featureflip_project.web.key
+  key        = "holiday-banner"
+  name       = "Holiday Banner"
+  type       = "Boolean"
+  expires_at = "2027-01-31T00:00:00Z"
+}
