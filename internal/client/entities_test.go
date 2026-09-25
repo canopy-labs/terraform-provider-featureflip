@@ -244,6 +244,69 @@ func TestFlagLifecyclePaths(t *testing.T) {
 	}
 }
 
+func TestFlagExpiry(t *testing.T) {
+	var cap captured
+	ctx := context.Background()
+
+	exp := "2027-01-31T00:00:00Z"
+	c := record(t, &cap, 201, `{"id":"f1","key":"limit","name":"Limit","type":"Boolean","expiresAtUtc":"2027-01-31T00:00:00Z"}`)
+	f, err := c.CreateFlag(ctx, "web", CreateFlagRequest{Key: "limit", Name: "Limit", Type: "Boolean", ExpiresAtUtc: &exp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap.Body["expiresAtUtc"] != exp {
+		t.Errorf("create body expiresAtUtc = %v", cap.Body["expiresAtUtc"])
+	}
+	if f.ExpiresAtUtc == nil || *f.ExpiresAtUtc != exp {
+		t.Errorf("create response expiresAtUtc = %v", f.ExpiresAtUtc)
+	}
+
+	// No expiry → the field is omitted, not sent as null.
+	c = record(t, &cap, 201, `{"id":"f1","key":"limit","name":"Limit","type":"Boolean","expiresAtUtc":null}`)
+	f, err = c.CreateFlag(ctx, "web", CreateFlagRequest{Key: "limit", Name: "Limit", Type: "Boolean"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := cap.Body["expiresAtUtc"]; present {
+		t.Errorf("create without expiry sent expiresAtUtc: %v", cap.Body)
+	}
+	if f.ExpiresAtUtc != nil {
+		t.Errorf("null expiresAtUtc decoded as %q", *f.ExpiresAtUtc)
+	}
+
+	// The flag PUT must never carry expiry, or every update would touch it.
+	c = record(t, &cap, 204, "")
+	if err := c.UpdateFlag(ctx, "web", "limit", UpdateFlagRequest{Name: "Limit", Tags: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := cap.Body["expiresAtUtc"]; present {
+		t.Errorf("flag PUT carried expiresAtUtc: %v", cap.Body)
+	}
+
+	c = record(t, &cap, 204, "")
+	if err := c.SetFlagExpiry(ctx, "web", "limit", exp); err != nil {
+		t.Fatal(err)
+	}
+	if cap.Method != "PUT" || cap.Path != "/api/v1/orgs/acme/projects/web/flags/limit/expiry" || cap.Body["expiresAtUtc"] != exp {
+		t.Errorf("set expiry: %s %s %v", cap.Method, cap.Path, cap.Body)
+	}
+
+	c = record(t, &cap, 204, "")
+	if err := c.ClearFlagExpiry(ctx, "web", "limit"); err != nil {
+		t.Fatal(err)
+	}
+	if cap.Method != "DELETE" || cap.Path != "/api/v1/orgs/acme/projects/web/flags/limit/expiry" {
+		t.Errorf("clear expiry: %s %s", cap.Method, cap.Path)
+	}
+
+	// EXPIRY_IN_PAST arrives inside the validation envelope's fields.
+	c = record(t, &cap, 400, `{"error":"validation_failed","message":"Validation failed","fields":{"expiresAtUtc":["EXPIRY_IN_PAST: expiresAtUtc must be in the future."]}}`)
+	err = c.SetFlagExpiry(ctx, "web", "limit", "2020-01-01T00:00:00Z")
+	if !HasCode(err, "EXPIRY_IN_PAST") {
+		t.Errorf("expected EXPIRY_IN_PAST, got %v", err)
+	}
+}
+
 func TestFlagEnvConfigPrerequisitesNullVsEmpty(t *testing.T) {
 	var cap captured
 	ctx := context.Background()

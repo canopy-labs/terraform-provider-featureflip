@@ -42,6 +42,7 @@ type featureFlagModel struct {
 	ClientSideVisible types.Bool   `tfsdk:"client_side_visible"`
 	Archived          types.Bool   `tfsdk:"archived"`
 	Variations        types.List   `tfsdk:"variations"`
+	ExpiresAt         types.String `tfsdk:"expires_at"`
 }
 
 type variationModel struct {
@@ -95,6 +96,14 @@ func (r *featureFlagResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"tags":                schema.SetAttribute{Optional: true, ElementType: types.StringType},
 			"client_side_visible": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false)},
 			"archived":            schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false)},
+			"expires_at": schema.StringAttribute{
+				Optional: true,
+				Description: "Advisory date by which the flag is expected to be removed, as an RFC 3339 timestamp " +
+					"(e.g. `2027-01-31T00:00:00Z`). Evaluation never changes when it passes; the flag is reported as stale " +
+					"so it can be cleaned up. It must be in the future when it is set or changed. A date that has since " +
+					"passed stays valid and causes no diff. Omitting it clears any expiry set on the flag.",
+				Validators: []validator.String{rfc3339Validator{}},
+			},
 			"variations": schema.ListNestedAttribute{
 				Optional:      true,
 				Computed:      true,
@@ -134,7 +143,8 @@ func (r *featureFlagResource) ValidateConfig(ctx context.Context, req resource.V
 // flagToModel converts an API flag to state. planVariations orders the state
 // variation list: when non-null, state follows the plan's order (required for
 // plan/state consistency); when null (Boolean flags, import), server order is used.
-func flagToModel(ctx context.Context, project string, f *client.Flag, planVariations types.List, planTags types.Set, diags *diag.Diagnostics) featureFlagModel {
+// priorExpiresAt keeps the configured spelling of an expiry the server echoes back.
+func flagToModel(ctx context.Context, project string, f *client.Flag, planVariations types.List, planTags types.Set, priorExpiresAt types.String, diags *diag.Diagnostics) featureFlagModel {
 	m := featureFlagModel{
 		ID:                types.StringValue(f.ID),
 		Project:           types.StringValue(project),
@@ -144,6 +154,7 @@ func flagToModel(ctx context.Context, project string, f *client.Flag, planVariat
 		Description:       types.StringPointerValue(f.Description),
 		ClientSideVisible: types.BoolValue(f.ClientSideVisible),
 		Archived:          types.BoolValue(f.IsArchived),
+		ExpiresAt:         expiryToModel(priorExpiresAt, f.ExpiresAtUtc),
 	}
 
 	if planTags.IsNull() && len(f.Tags) == 0 {
@@ -226,6 +237,14 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 		Tags:              r.tagsFromSet(ctx, plan.Tags, &resp.Diagnostics),
 		ClientSideVisible: plan.ClientSideVisible.ValueBool(),
 	}
+	if !plan.ExpiresAt.IsNull() && !plan.ExpiresAt.IsUnknown() {
+		wire, err := expiryWireValue(plan.ExpiresAt)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("expires_at"), "Invalid expires_at", err.Error())
+			return
+		}
+		creq.ExpiresAtUtc = &wire
+	}
 	if !plan.Variations.IsNull() && !plan.Variations.IsUnknown() {
 		var pv []variationModel
 		resp.Diagnostics.Append(plan.Variations.ElementsAs(ctx, &pv, false)...)
@@ -242,7 +261,7 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 
 	f, err := r.client.CreateFlag(ctx, project, creq)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), err.Error())
+		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), withExpiryHint(err))
 		return
 	}
 	if plan.Archived.ValueBool() {
@@ -252,7 +271,7 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 		}
 		f.IsArchived = true
 	}
-	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, &resp.Diagnostics)
+	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, &resp.Diagnostics)
 	if plan.Description.IsNull() && f.Description != nil && *f.Description == "" {
 		m.Description = types.StringNull()
 	}
@@ -274,7 +293,7 @@ func (r *featureFlagResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.Diagnostics.AddError(fmt.Sprintf("Reading featureflip_feature_flag %q failed", state.ID.ValueString()), err.Error())
 		return
 	}
-	m := flagToModel(ctx, state.Project.ValueString(), f, state.Variations, state.Tags, &resp.Diagnostics)
+	m := flagToModel(ctx, state.Project.ValueString(), f, state.Variations, state.Tags, state.ExpiresAt, &resp.Diagnostics)
 	if state.Description.IsNull() && f.Description != nil && *f.Description == "" {
 		m.Description = types.StringNull()
 	}
@@ -309,6 +328,24 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	// Expiry has its own endpoints; the flag PUT above never touches it. Only
+	// call them on a real change, so an expiry that has since passed never
+	// trips EXPIRY_IN_PAST on an unrelated update.
+	if !plan.ExpiresAt.IsUnknown() && expiryChanged(plan.ExpiresAt, state.ExpiresAt) {
+		if plan.ExpiresAt.IsNull() {
+			err = r.client.ClearFlagExpiry(ctx, project, key)
+		} else {
+			var wire string
+			if wire, err = expiryWireValue(plan.ExpiresAt); err == nil {
+				err = r.client.SetFlagExpiry(ctx, project, key, wire)
+			}
+		}
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Updating expires_at on featureflip_feature_flag %q failed", key), withExpiryHint(err))
+			return
+		}
+	}
+
 	if !plan.Variations.IsNull() && !plan.Variations.IsUnknown() {
 		if ok := r.reconcileVariations(ctx, project, key, plan.Variations, &resp.Diagnostics); !ok {
 			return
@@ -328,11 +365,23 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError(fmt.Sprintf("Re-reading featureflip_feature_flag %q after update failed", key), err.Error())
 		return
 	}
-	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, &resp.Diagnostics)
+	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, &resp.Diagnostics)
 	if plan.Description.IsNull() && f.Description != nil && *f.Description == "" {
 		m.Description = types.StringNull()
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
+}
+
+// withExpiryHint appends guidance to the API's expiry rejections.
+func withExpiryHint(err error) string {
+	msg := err.Error()
+	switch {
+	case client.HasCode(err, "EXPIRY_IN_PAST"):
+		msg += "\n\nexpires_at must be in the future when it is set or changed. Pick a later date, or remove expires_at to clear it."
+	case client.HasCode(err, "FEATURE_NOT_ENABLED"):
+		msg += "\n\nFlag expiration dates are not enabled for this organization yet. Remove expires_at until they are."
+	}
+	return msg
 }
 
 // reconcileVariations converges server variations to the planned list, keyed
