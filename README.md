@@ -1,6 +1,6 @@
 # Terraform Provider for Featureflip
 
-Manage [Featureflip](https://featureflip.io) projects, environments, feature flags, targeting rules, segments, and SDK keys as code.
+Manage [Featureflip](https://featureflip.io) projects, environments, feature flags, targeting rules, segments, SDK keys, and webhooks as code.
 
 ## Usage
 
