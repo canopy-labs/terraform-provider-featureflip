@@ -10,7 +10,12 @@
 # flipped on by docker-compose.yml, so every /api/v1/* request 404s
 # (PublicApiAvailabilityMiddleware) until it's enabled. This override sets it
 # to true for the compose project started by local-api.sh only.
+#
+# Webhooks__Enabled does the same for the outbound-webhook subsystem, which
+# ships off by default upstream: with it off, every /api/v1/orgs/{org}/webhooks
+# route answers 404, so the featureflip_webhook* acceptance tests would fail.
 services:
   management-api:
     environment:
       - Features__PublicManagementApi=true
+      - Webhooks__Enabled=true

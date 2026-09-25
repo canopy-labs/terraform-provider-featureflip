@@ -1,18 +1,18 @@
 ---
 page_title: "Featureflip Provider"
 description: |-
-  Manage Featureflip projects, environments, feature flags, targeting rules, segments, and SDK keys as code.
+  Manage Featureflip projects, environments, feature flags, targeting rules, segments, SDK keys, and webhooks as code.
 ---
 
 # Featureflip Provider
 
-The Featureflip provider manages [Featureflip](https://featureflip.io) resources through the public Management API: projects, environments, feature flags (including variations and per-environment targeting), user segments, and SDK keys.
+The Featureflip provider manages [Featureflip](https://featureflip.io) resources through the public Management API: projects, environments, feature flags (including variations and per-environment targeting), user segments, SDK keys, and outbound webhook subscriptions.
 
 ## Authentication
 
 Create an API token in the Featureflip dashboard:
 
-- **Service token (`ffs_…`) — recommended.** Organization Settings → Service Tokens. Scoped to one organization with a role (use Member or Admin; Viewer tokens cannot write) and an optional project allowlist.
+- **Service token (`ffs_…`) — recommended.** Organization Settings → Service Tokens. Scoped to one organization with a role (use Member or Admin; Viewer tokens cannot write, and webhooks require Admin) and an optional project allowlist.
 - **Personal access token (`ffp_…`).** Acts as your user across your organizations.
 
 Tokens cannot be created through the public API — only through the dashboard.

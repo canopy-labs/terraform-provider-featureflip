@@ -122,6 +122,8 @@ func (p *featureflipProvider) Resources(_ context.Context) []func() resource.Res
 		newFeatureFlagResource,
 		newFlagEnvironmentResource,
 		newSDKKeyResource,
+		newWebhookResource,
+		newWebhookSecretResource,
 	}
 }
 
@@ -132,5 +134,6 @@ func (p *featureflipProvider) DataSources(_ context.Context) []func() datasource
 		newEnvironmentDataSource,
 		newFeatureFlagDataSource,
 		newSegmentDataSource,
+		newWebhookEventTypesDataSource,
 	}
 }
