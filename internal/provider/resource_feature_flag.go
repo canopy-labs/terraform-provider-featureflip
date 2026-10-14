@@ -111,7 +111,7 @@ func (r *featureFlagResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Description: "Email of the organization member responsible for the flag; they get its cleanup notices. " +
 					"Compared case-insensitively. Omitting it leaves the flag unowned, including when the API would " +
 					"otherwise default the owner to the creating user. Needs the Pro plan or above.",
-				Validators: []validator.String{stringvalidator.LengthAtLeast(3)},
+				Validators: []validator.String{ownerEmailValidator()},
 			},
 			"permanent": schema.BoolAttribute{
 				Optional: true,
@@ -296,7 +296,7 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 	}
 	// Omitted owner_email means unowned, but the API makes a member caller the
 	// owner by default. DELETE is always allowed, whatever the plan.
-	if plan.OwnerEmail.IsNull() && f.Owner != nil {
+	if shouldClearDefaultOwner(plan.OwnerEmail, f) {
 		if err := r.client.ClearFlagOwner(ctx, project, f.Key); err != nil {
 			// Track the flag (it exists) and fail: Terraform taints it and replaces it next apply.
 			resp.Diagnostics.Append(resp.State.Set(ctx, flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics))...)

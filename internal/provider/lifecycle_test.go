@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/canopy-labs/terraform-provider-featureflip/internal/client"
@@ -113,5 +116,64 @@ func TestWithLifecycleHint(t *testing.T) {
 	}
 	if got := withLifecycleHint(apiErr("SOMETHING_ELSE"), "owner_email"); strings.Contains(got, "\n\n") {
 		t.Errorf("unknown codes get no hint, got %q", got)
+	}
+}
+
+func TestWithLifecycleHintNamesTheRejectedField(t *testing.T) {
+	// One create body carries several gated fields; the field key says which was refused.
+	for _, tc := range []struct {
+		field, passed, want string
+	}{
+		{"isPermanent", "expires_at", "Remove permanent"},
+		{"owner", "expires_at", "Remove owner_email"},
+		{"expiresAtUtc", "owner_email", "Remove expires_at"},
+		{"days", "expires_at", "Remove default_flag_lifetime_days"},
+	} {
+		err := &client.APIError{StatusCode: 400, Code: "validation_failed", Message: "x", Fields: map[string][]string{tc.field: {"FEATURE_NOT_ENABLED"}}}
+		if got := withLifecycleHint(err, tc.passed); !strings.Contains(got, tc.want) {
+			t.Errorf("field %s: %q does not contain %q", tc.field, got, tc.want)
+		}
+	}
+	err := &client.APIError{StatusCode: 400, Code: "validation_failed", Message: "x", Fields: map[string][]string{"isPermanent": {"FEATURE_NOT_ENABLED"}}}
+	if got := withLifecycleHint(err, "expires_at"); !strings.Contains(got, "Permanent flags") {
+		t.Errorf("the hint must name the feature, got %q", got)
+	}
+}
+
+func TestOwnerEmailValidator(t *testing.T) {
+	for _, tc := range []struct {
+		v  string
+		ok bool
+	}{
+		{"jane@example.com", true},
+		{"Jane.Doe+ff@Example.co.uk", true},
+		// The API trims, so a padded value would come back different and break apply.
+		{" jane@example.com", false},
+		{"jane@example.com ", false},
+		{"   ", false},
+		{"not-an-email", false},
+	} {
+		var resp validator.StringResponse
+		ownerEmailValidator().ValidateString(context.Background(), validator.StringRequest{Path: path.Root("owner_email"), ConfigValue: types.StringValue(tc.v)}, &resp)
+		if resp.Diagnostics.HasError() == tc.ok {
+			t.Errorf("%q: error=%v, want ok=%v", tc.v, resp.Diagnostics.HasError(), tc.ok)
+		}
+	}
+}
+
+func TestShouldClearDefaultOwner(t *testing.T) {
+	owned := &client.Flag{Owner: &client.FlagOwner{Email: "a@b.c"}}
+	unowned := &client.Flag{}
+	if !shouldClearDefaultOwner(types.StringNull(), owned) {
+		t.Error("omitted owner_email with an API-defaulted owner must be cleared")
+	}
+	if shouldClearDefaultOwner(types.StringNull(), unowned) {
+		t.Error("nothing to clear when the API set no owner (service token)")
+	}
+	if shouldClearDefaultOwner(types.StringValue("a@b.c"), owned) {
+		t.Error("a configured owner must never be cleared")
+	}
+	if shouldClearDefaultOwner(types.StringUnknown(), owned) {
+		t.Error("an unknown owner must not be cleared")
 	}
 }
