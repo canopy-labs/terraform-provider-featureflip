@@ -76,6 +76,8 @@ type projectDSModel struct {
 	Key         types.String `tfsdk:"key"`
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
+
+	DefaultFlagLifetimeDays types.Int64 `tfsdk:"default_flag_lifetime_days"`
 }
 
 func (d *projectDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -90,6 +92,10 @@ func (d *projectDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"key":         schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
 			"name":        schema.StringAttribute{Computed: true},
 			"description": schema.StringAttribute{Computed: true},
+			"default_flag_lifetime_days": schema.Int64Attribute{
+				Computed:    true,
+				Description: "Default lifetime in days for temporary flags with no expiry of their own, or null when none is set.",
+			},
 		},
 	}
 }
@@ -110,6 +116,8 @@ func (d *projectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		Key:         types.StringValue(p.Key),
 		Name:        types.StringValue(p.Name),
 		Description: types.StringPointerValue(p.Description),
+
+		DefaultFlagLifetimeDays: lifetimeToModel(p.DefaultFlagLifetimeDays),
 	})...)
 }
 

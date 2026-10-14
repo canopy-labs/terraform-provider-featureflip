@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -31,6 +32,8 @@ type projectModel struct {
 	Key         types.String `tfsdk:"key"`
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
+
+	DefaultFlagLifetimeDays types.Int64 `tfsdk:"default_flag_lifetime_days"`
 }
 
 func (r *projectResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -53,6 +56,12 @@ func (r *projectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"name":        schema.StringAttribute{Required: true},
 			"description": schema.StringAttribute{Optional: true},
+			"default_flag_lifetime_days": schema.Int64Attribute{
+				Optional: true,
+				Description: "Days a temporary flag with no expires_at of its own lives before it counts as expired " +
+					"(1–3650). Advisory only: evaluation never changes. Omitting it removes the default.",
+				Validators: []validator.Int64{int64validator.Between(1, 3650)},
+			},
 		},
 	}
 }
@@ -63,7 +72,23 @@ func projectToModel(p *client.Project) projectModel {
 		Key:         types.StringValue(p.Key),
 		Name:        types.StringValue(p.Name),
 		Description: types.StringPointerValue(p.Description),
+
+		DefaultFlagLifetimeDays: lifetimeToModel(p.DefaultFlagLifetimeDays),
 	}
+}
+
+// setLifetime writes default_flag_lifetime_days when it differs from what the
+// server holds. It is its own endpoint; the project PUT never touches it.
+func (r *projectResource) setLifetime(ctx context.Context, key string, plan, current types.Int64) error {
+	if !lifetimeChanged(plan, current) {
+		return nil
+	}
+	var days *int
+	if !plan.IsNull() {
+		d := int(plan.ValueInt64())
+		days = &d
+	}
+	return r.client.SetDefaultFlagLifetime(ctx, key, days)
 }
 
 func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -86,6 +111,14 @@ func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest
 	if plan.Description.IsNull() && p.Description != nil && *p.Description == "" {
 		m.Description = types.StringNull()
 	}
+	if err := r.setLifetime(ctx, plan.Key.ValueString(), plan.DefaultFlagLifetimeDays, m.DefaultFlagLifetimeDays); err != nil {
+		// The project exists: track it, then fail. Terraform taints it and replaces it next apply.
+		resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
+		resp.Diagnostics.AddError(fmt.Sprintf("Setting default_flag_lifetime_days on featureflip_project %q failed", plan.Key.ValueString()),
+			withLifecycleHint(err, "default_flag_lifetime_days"))
+		return
+	}
+	m.DefaultFlagLifetimeDays = plan.DefaultFlagLifetimeDays
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
 }
 
@@ -113,8 +146,9 @@ func (r *projectResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan projectModel
+	var plan, state projectModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -124,6 +158,11 @@ func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest
 	})
 	if err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Updating featureflip_project %q failed", plan.Key.ValueString()), err.Error())
+		return
+	}
+	if err := r.setLifetime(ctx, plan.Key.ValueString(), plan.DefaultFlagLifetimeDays, state.DefaultFlagLifetimeDays); err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("Updating default_flag_lifetime_days on featureflip_project %q failed", plan.Key.ValueString()),
+			withLifecycleHint(err, "default_flag_lifetime_days"))
 		return
 	}
 	p, err := r.client.GetProject(ctx, plan.Key.ValueString())
