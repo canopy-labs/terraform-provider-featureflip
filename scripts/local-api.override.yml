@@ -19,3 +19,9 @@ services:
     environment:
       - Features__PublicManagementApi=true
       - Webhooks__Enabled=true
+      # Flag ownership, permanent flags and expiry (incl. the project default
+      # lifetime) are config-gated too and off by default; the lifecycle
+      # acceptance tests need them on.
+      - Features__FlagOwnership=true
+      - Features__FlagPermanence=true
+      - Features__FlagExpiration=true

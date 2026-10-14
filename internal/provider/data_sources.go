@@ -76,6 +76,8 @@ type projectDSModel struct {
 	Key         types.String `tfsdk:"key"`
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
+
+	DefaultFlagLifetimeDays types.Int64 `tfsdk:"default_flag_lifetime_days"`
 }
 
 func (d *projectDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -90,6 +92,10 @@ func (d *projectDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"key":         schema.StringAttribute{Required: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
 			"name":        schema.StringAttribute{Computed: true},
 			"description": schema.StringAttribute{Computed: true},
+			"default_flag_lifetime_days": schema.Int64Attribute{
+				Computed:    true,
+				Description: "Default lifetime in days for temporary flags with no expiry of their own, or null when none is set.",
+			},
 		},
 	}
 }
@@ -110,6 +116,8 @@ func (d *projectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		Key:         types.StringValue(p.Key),
 		Name:        types.StringValue(p.Name),
 		Description: types.StringPointerValue(p.Description),
+
+		DefaultFlagLifetimeDays: lifetimeToModel(p.DefaultFlagLifetimeDays),
 	})...)
 }
 
@@ -174,17 +182,21 @@ type featureFlagDataSource struct{ datasourceWithClient }
 func newFeatureFlagDataSource() datasource.DataSource { return &featureFlagDataSource{} }
 
 type featureFlagDSModel struct {
-	ID                types.String `tfsdk:"id"`
-	Project           types.String `tfsdk:"project"`
-	Key               types.String `tfsdk:"key"`
-	Name              types.String `tfsdk:"name"`
-	Type              types.String `tfsdk:"type"`
-	Description       types.String `tfsdk:"description"`
-	Tags              types.Set    `tfsdk:"tags"`
-	ClientSideVisible types.Bool   `tfsdk:"client_side_visible"`
-	Archived          types.Bool   `tfsdk:"archived"`
-	Variations        types.List   `tfsdk:"variations"`
-	ExpiresAt         types.String `tfsdk:"expires_at"`
+	ID                 types.String `tfsdk:"id"`
+	Project            types.String `tfsdk:"project"`
+	Key                types.String `tfsdk:"key"`
+	Name               types.String `tfsdk:"name"`
+	Type               types.String `tfsdk:"type"`
+	Description        types.String `tfsdk:"description"`
+	Tags               types.Set    `tfsdk:"tags"`
+	ClientSideVisible  types.Bool   `tfsdk:"client_side_visible"`
+	Archived           types.Bool   `tfsdk:"archived"`
+	Variations         types.List   `tfsdk:"variations"`
+	ExpiresAt          types.String `tfsdk:"expires_at"`
+	OwnerEmail         types.String `tfsdk:"owner_email"`
+	Permanent          types.Bool   `tfsdk:"permanent"`
+	EffectiveExpiresAt types.String `tfsdk:"effective_expires_at"`
+	ExpirySource       types.String `tfsdk:"expiry_source"`
 }
 
 func (d *featureFlagDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -207,6 +219,17 @@ func (d *featureFlagDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 			"expires_at": schema.StringAttribute{
 				Computed:    true,
 				Description: "Advisory expiry date (RFC 3339, UTC), or null when none is set.",
+			},
+			"owner_email": schema.StringAttribute{Computed: true, Description: "Email of the flag's owner, or null when unowned."},
+			"permanent":   schema.BoolAttribute{Computed: true, Description: "Whether the flag is marked permanent."},
+			"effective_expires_at": schema.StringAttribute{
+				Computed: true,
+				Description: "When the flag counts as past expiry (RFC 3339, UTC): its own expires_at, or else its " +
+					"project's default flag lifetime counted from creation. Null when neither applies.",
+			},
+			"expiry_source": schema.StringAttribute{
+				Computed:    true,
+				Description: "Where effective_expires_at comes from: `explicit` (the flag's expires_at) or `project-default`. Null when neither applies.",
 			},
 			"variations": schema.ListNestedAttribute{
 				Computed: true,
@@ -235,7 +258,7 @@ func (d *featureFlagDataSource) Read(ctx context.Context, req datasource.ReadReq
 		resp.Diagnostics.AddError("Reading featureflip_feature_flag failed", err.Error())
 		return
 	}
-	m := flagToModel(ctx, cfg.Project.ValueString(), f, types.ListNull(types.ObjectType{AttrTypes: variationAttrTypes()}), types.SetNull(types.StringType), types.StringNull(), &resp.Diagnostics)
+	m := flagToModel(ctx, cfg.Project.ValueString(), f, types.ListNull(types.ObjectType{AttrTypes: variationAttrTypes()}), types.SetNull(types.StringType), types.StringNull(), types.StringNull(), &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -249,6 +272,9 @@ func (d *featureFlagDataSource) Read(ctx context.Context, req datasource.ReadReq
 		ID: m.ID, Project: m.Project, Key: m.Key, Name: m.Name, Type: m.Type,
 		Description: m.Description, Tags: m.Tags, ClientSideVisible: m.ClientSideVisible,
 		Archived: m.Archived, Variations: m.Variations, ExpiresAt: m.ExpiresAt,
+		OwnerEmail: m.OwnerEmail, Permanent: m.Permanent,
+		EffectiveExpiresAt: types.StringPointerValue(f.EffectiveExpiresAtUtc),
+		ExpirySource:       types.StringPointerValue(f.ExpirySource),
 	})...)
 }
 

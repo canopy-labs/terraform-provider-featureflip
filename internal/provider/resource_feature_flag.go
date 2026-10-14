@@ -43,6 +43,8 @@ type featureFlagModel struct {
 	Archived          types.Bool   `tfsdk:"archived"`
 	Variations        types.List   `tfsdk:"variations"`
 	ExpiresAt         types.String `tfsdk:"expires_at"`
+	OwnerEmail        types.String `tfsdk:"owner_email"`
+	Permanent         types.Bool   `tfsdk:"permanent"`
 }
 
 type variationModel struct {
@@ -104,6 +106,21 @@ func (r *featureFlagResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"passed stays valid and causes no diff. Omitting it clears any expiry set on the flag.",
 				Validators: []validator.String{rfc3339Validator{}},
 			},
+			"owner_email": schema.StringAttribute{
+				Optional: true,
+				Description: "Email of the organization member responsible for the flag; they get its cleanup notices. " +
+					"Compared case-insensitively. Omitting it leaves the flag unowned, including when the API would " +
+					"otherwise default the owner to the creating user. Needs the Pro plan or above.",
+				Validators: []validator.String{ownerEmailValidator()},
+			},
+			"permanent": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Marks a flag that is meant to stay (a kill switch, ops toggle or entitlement gate). " +
+					"Permanent flags are never reported for cleanup or past expiry; evaluation never changes. " +
+					"Can't be combined with expires_at.",
+			},
 			"variations": schema.ListNestedAttribute{
 				Optional:      true,
 				Computed:      true,
@@ -126,6 +143,10 @@ func (r *featureFlagResource) Schema(_ context.Context, _ resource.SchemaRequest
 func (r *featureFlagResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var cfg featureFlagModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if !resp.Diagnostics.HasError() && permanentConflictsWithExpiry(cfg.Permanent, cfg.ExpiresAt) {
+		resp.Diagnostics.AddAttributeError(path.Root("permanent"), "permanent conflicts with expires_at",
+			"A permanent flag can't have an expiry date. Remove expires_at, or set permanent = false.")
+	}
 	if resp.Diagnostics.HasError() || cfg.Type.IsUnknown() || cfg.Type.IsNull() {
 		return
 	}
@@ -143,8 +164,9 @@ func (r *featureFlagResource) ValidateConfig(ctx context.Context, req resource.V
 // flagToModel converts an API flag to state. planVariations orders the state
 // variation list: when non-null, state follows the plan's order (required for
 // plan/state consistency); when null (Boolean flags, import), server order is used.
-// priorExpiresAt keeps the configured spelling of an expiry the server echoes back.
-func flagToModel(ctx context.Context, project string, f *client.Flag, planVariations types.List, planTags types.Set, priorExpiresAt types.String, diags *diag.Diagnostics) featureFlagModel {
+// priorExpiresAt and priorOwner keep the configured spelling of a value the
+// server echoes back in another form.
+func flagToModel(ctx context.Context, project string, f *client.Flag, planVariations types.List, planTags types.Set, priorExpiresAt, priorOwner types.String, diags *diag.Diagnostics) featureFlagModel {
 	m := featureFlagModel{
 		ID:                types.StringValue(f.ID),
 		Project:           types.StringValue(project),
@@ -155,6 +177,8 @@ func flagToModel(ctx context.Context, project string, f *client.Flag, planVariat
 		ClientSideVisible: types.BoolValue(f.ClientSideVisible),
 		Archived:          types.BoolValue(f.IsArchived),
 		ExpiresAt:         expiryToModel(priorExpiresAt, f.ExpiresAtUtc),
+		OwnerEmail:        ownerToModel(priorOwner, f.Owner),
+		Permanent:         types.BoolValue(f.IsPermanent),
 	}
 
 	if planTags.IsNull() && len(f.Tags) == 0 {
@@ -245,6 +269,12 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 		}
 		creq.ExpiresAtUtc = &wire
 	}
+	creq.IsPermanent = plan.Permanent.ValueBool()
+	hintAttr := "expires_at"
+	if !plan.OwnerEmail.IsNull() && !plan.OwnerEmail.IsUnknown() {
+		creq.OwnerEmail = plan.OwnerEmail.ValueStringPointer()
+		hintAttr = "owner_email"
+	}
 	if !plan.Variations.IsNull() && !plan.Variations.IsUnknown() {
 		var pv []variationModel
 		resp.Diagnostics.Append(plan.Variations.ElementsAs(ctx, &pv, false)...)
@@ -261,8 +291,19 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 
 	f, err := r.client.CreateFlag(ctx, project, creq)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), withExpiryHint(err))
+		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), withLifecycleHint(err, hintAttr))
 		return
+	}
+	// Omitted owner_email means unowned, but the API makes a member caller the
+	// owner by default. DELETE is always allowed, whatever the plan.
+	if shouldClearDefaultOwner(plan.OwnerEmail, f) {
+		if err := r.client.ClearFlagOwner(ctx, project, f.Key); err != nil {
+			// Track the flag (it exists) and fail: Terraform taints it and replaces it next apply.
+			resp.Diagnostics.Append(resp.State.Set(ctx, flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics))...)
+			resp.Diagnostics.AddError(fmt.Sprintf("Clearing the default owner of featureflip_feature_flag %q failed", plan.Key.ValueString()), err.Error())
+			return
+		}
+		f.Owner = nil
 	}
 	if plan.Archived.ValueBool() {
 		if err := r.client.ArchiveFlag(ctx, project, f.Key); err != nil {
@@ -271,7 +312,7 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 		}
 		f.IsArchived = true
 	}
-	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, &resp.Diagnostics)
+	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics)
 	if plan.Description.IsNull() && f.Description != nil && *f.Description == "" {
 		m.Description = types.StringNull()
 	}
@@ -293,7 +334,7 @@ func (r *featureFlagResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.Diagnostics.AddError(fmt.Sprintf("Reading featureflip_feature_flag %q failed", state.ID.ValueString()), err.Error())
 		return
 	}
-	m := flagToModel(ctx, state.Project.ValueString(), f, state.Variations, state.Tags, state.ExpiresAt, &resp.Diagnostics)
+	m := flagToModel(ctx, state.Project.ValueString(), f, state.Variations, state.Tags, state.ExpiresAt, state.OwnerEmail, &resp.Diagnostics)
 	if state.Description.IsNull() && f.Description != nil && *f.Description == "" {
 		m.Description = types.StringNull()
 	}
@@ -328,9 +369,19 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	// Expiry has its own endpoints; the flag PUT above never touches it. Only
-	// call them on a real change, so an expiry that has since passed never
-	// trips EXPIRY_IN_PAST on an unrelated update.
+	// Lifecycle fields have their own endpoints; the flag PUT above never
+	// touches them. Order matters because the API refuses a permanent flag
+	// with an expiry: drop permanent before an expiry is set, and set
+	// permanent only after the expiry is cleared.
+	if state.Permanent.ValueBool() && !plan.Permanent.ValueBool() {
+		if err := r.client.ClearFlagPermanent(ctx, project, key); err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Updating permanent on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "permanent"))
+			return
+		}
+	}
+
+	// Only call the expiry endpoints on a real change, so an expiry that has
+	// since passed never trips EXPIRY_IN_PAST on an unrelated update.
 	if !plan.ExpiresAt.IsUnknown() && expiryChanged(plan.ExpiresAt, state.ExpiresAt) {
 		if plan.ExpiresAt.IsNull() {
 			err = r.client.ClearFlagExpiry(ctx, project, key)
@@ -341,7 +392,26 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 			}
 		}
 		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Updating expires_at on featureflip_feature_flag %q failed", key), withExpiryHint(err))
+			resp.Diagnostics.AddError(fmt.Sprintf("Updating expires_at on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "expires_at"))
+			return
+		}
+	}
+
+	if !state.Permanent.ValueBool() && plan.Permanent.ValueBool() {
+		if err := r.client.SetFlagPermanent(ctx, project, key); err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Updating permanent on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "permanent"))
+			return
+		}
+	}
+
+	if !plan.OwnerEmail.IsUnknown() && ownerChanged(plan.OwnerEmail, state.OwnerEmail) {
+		if plan.OwnerEmail.IsNull() {
+			err = r.client.ClearFlagOwner(ctx, project, key)
+		} else {
+			err = r.client.SetFlagOwner(ctx, project, key, plan.OwnerEmail.ValueString())
+		}
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Updating owner_email on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "owner_email"))
 			return
 		}
 	}
@@ -365,23 +435,11 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError(fmt.Sprintf("Re-reading featureflip_feature_flag %q after update failed", key), err.Error())
 		return
 	}
-	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, &resp.Diagnostics)
+	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics)
 	if plan.Description.IsNull() && f.Description != nil && *f.Description == "" {
 		m.Description = types.StringNull()
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
-}
-
-// withExpiryHint appends guidance to the API's expiry rejections.
-func withExpiryHint(err error) string {
-	msg := err.Error()
-	switch {
-	case client.HasCode(err, "EXPIRY_IN_PAST"):
-		msg += "\n\nexpires_at must be in the future when it is set or changed. Pick a later date, or remove expires_at to clear it."
-	case client.HasCode(err, "FEATURE_NOT_ENABLED"):
-		msg += "\n\nFlag expiration dates are not enabled for this organization yet. Remove expires_at until they are."
-	}
-	return msg
 }
 
 // reconcileVariations converges server variations to the planned list, keyed

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -444,5 +445,106 @@ func TestSDKKeyLifecycle(t *testing.T) {
 	}
 	if cap.Method != "POST" || cap.Path != "/api/v1/orgs/acme/projects/web/environments/prod/sdk-keys/k1/revoke" {
 		t.Errorf("revoke: %s %s", cap.Method, cap.Path)
+	}
+}
+
+func TestFlagLifecycleFieldsDecode(t *testing.T) {
+	var cap captured
+	c := record(t, &cap, 200, `{"id":"f1","key":"k","name":"K","type":"Boolean","owner":{"id":"u1","email":"a@b.c","name":"A"},
+		"isPermanent":true,"effectiveExpiresAtUtc":"2027-01-31T00:00:00Z","expirySource":"project-default"}`)
+	f, err := c.GetFlag(context.Background(), "web", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Owner == nil || f.Owner.Email != "a@b.c" || !f.IsPermanent {
+		t.Errorf("owner/permanent = %+v / %v", f.Owner, f.IsPermanent)
+	}
+	if f.EffectiveExpiresAtUtc == nil || *f.EffectiveExpiresAtUtc != "2027-01-31T00:00:00Z" || f.ExpirySource == nil || *f.ExpirySource != "project-default" {
+		t.Errorf("effective expiry = %v / %v", f.EffectiveExpiresAtUtc, f.ExpirySource)
+	}
+}
+
+func TestCreateFlagSendsOwnerAndPermanent(t *testing.T) {
+	var cap captured
+	c := record(t, &cap, 201, `{"id":"f1","key":"k"}`)
+	_, err := c.CreateFlag(context.Background(), "web", CreateFlagRequest{Key: "k", Name: "K", Type: "Boolean", OwnerEmail: strPtr("a@b.c"), IsPermanent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap.Body["ownerEmail"] != "a@b.c" || cap.Body["isPermanent"] != true {
+		t.Errorf("body = %v", cap.Body)
+	}
+	// No owner configured: the field is omitted, so the API applies its own default.
+	_, _ = c.CreateFlag(context.Background(), "web", CreateFlagRequest{Key: "k", Name: "K", Type: "Boolean"})
+	if _, present := cap.Body["ownerEmail"]; present {
+		t.Errorf("ownerEmail must be omitted when nil, body = %v", cap.Body)
+	}
+}
+
+func TestFlagOwnerAndPermanentEndpoints(t *testing.T) {
+	var cap captured
+	c := record(t, &cap, 204, ``)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		call   func() error
+		method string
+		path   string
+		body   map[string]any
+	}{
+		{"set owner", func() error { return c.SetFlagOwner(ctx, "web", "k", "a@b.c") }, "PUT", "/api/v1/orgs/acme/projects/web/flags/k/owner", map[string]any{"email": "a@b.c"}},
+		{"clear owner", func() error { return c.ClearFlagOwner(ctx, "web", "k") }, "DELETE", "/api/v1/orgs/acme/projects/web/flags/k/owner", nil},
+		{"set permanent", func() error { return c.SetFlagPermanent(ctx, "web", "k") }, "PUT", "/api/v1/orgs/acme/projects/web/flags/k/permanent", nil},
+		{"clear permanent", func() error { return c.ClearFlagPermanent(ctx, "web", "k") }, "DELETE", "/api/v1/orgs/acme/projects/web/flags/k/permanent", nil},
+	} {
+		if err := tc.call(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if cap.Method != tc.method || cap.Path != tc.path {
+			t.Errorf("%s: %s %s", tc.name, cap.Method, cap.Path)
+		}
+		if tc.body != nil && cap.Body["email"] != tc.body["email"] {
+			t.Errorf("%s: body = %v", tc.name, cap.Body)
+		}
+	}
+}
+
+func TestSetDefaultFlagLifetimeWireShape(t *testing.T) {
+	var raw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		raw = r.Method + " " + r.URL.Path + " " + string(b)
+		w.WriteHeader(204)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL, "ffs_t", "acme", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	days := 90
+	if err := c.SetDefaultFlagLifetime(context.Background(), "web", &days); err != nil {
+		t.Fatal(err)
+	}
+	if raw != `PUT /api/v1/orgs/acme/projects/web/default-flag-lifetime {"days":90}` {
+		t.Errorf("set: %s", raw)
+	}
+	// Removal must be an explicit null: the API answers {} with a validation error, never a removal.
+	if err := c.SetDefaultFlagLifetime(context.Background(), "web", nil); err != nil {
+		t.Fatal(err)
+	}
+	if raw != `PUT /api/v1/orgs/acme/projects/web/default-flag-lifetime {"days":null}` {
+		t.Errorf("remove: %s", raw)
+	}
+}
+
+func TestProjectDefaultFlagLifetimeDecodes(t *testing.T) {
+	var cap captured
+	c := record(t, &cap, 200, `{"id":"p1","key":"web","name":"Web","defaultFlagLifetimeDays":30}`)
+	p, err := c.GetProject(context.Background(), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.DefaultFlagLifetimeDays == nil || *p.DefaultFlagLifetimeDays != 30 {
+		t.Errorf("defaultFlagLifetimeDays = %v", p.DefaultFlagLifetimeDays)
 	}
 }
