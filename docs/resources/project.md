@@ -17,6 +17,9 @@ resource "featureflip_project" "web" {
   key         = "web"
   name        = "Web App"
   description = "Customer-facing web application"
+
+  # Temporary flags with no expires_at of their own count as expired after 90 days.
+  default_flag_lifetime_days = 90
 }
 ```
 
@@ -30,6 +33,7 @@ resource "featureflip_project" "web" {
 
 ### Optional
 
+- `default_flag_lifetime_days` (Number) Days a temporary flag with no expires_at of its own lives before it counts as expired (1–3650). Advisory only: evaluation never changes. Omitting it removes the default.
 - `description` (String)
 
 ### Read-Only

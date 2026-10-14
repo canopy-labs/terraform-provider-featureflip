@@ -27,6 +27,7 @@ data "featureflip_project" "web" {
 
 ### Read-Only
 
+- `default_flag_lifetime_days` (Number) Default lifetime in days for temporary flags with no expiry of their own, or null when none is set.
 - `description` (String)
 - `id` (String) The ID of this resource.
 - `name` (String)

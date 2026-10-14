@@ -32,9 +32,13 @@ data "featureflip_feature_flag" "new_checkout" {
 - `archived` (Boolean)
 - `client_side_visible` (Boolean)
 - `description` (String)
+- `effective_expires_at` (String) When the flag counts as past expiry (RFC 3339, UTC): its own expires_at, or else its project's default flag lifetime counted from creation. Null when neither applies.
 - `expires_at` (String) Advisory expiry date (RFC 3339, UTC), or null when none is set.
+- `expiry_source` (String) Where effective_expires_at comes from: `explicit` (the flag's expires_at) or `project-default`. Null when neither applies.
 - `id` (String) The ID of this resource.
 - `name` (String)
+- `owner_email` (String) Email of the flag's owner, or null when unowned.
+- `permanent` (Boolean) Whether the flag is marked permanent.
 - `tags` (Set of String)
 - `type` (String)
 - `variations` (Attributes List) (see [below for nested schema](#nestedatt--variations))

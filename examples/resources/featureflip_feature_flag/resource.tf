@@ -29,3 +29,14 @@ resource "featureflip_feature_flag" "holiday_banner" {
   type       = "Boolean"
   expires_at = "2027-01-31T00:00:00Z"
 }
+
+# A kill switch that is meant to stay: permanent flags are never reported for
+# cleanup. owner_email names the member who gets the flag's cleanup notices.
+resource "featureflip_feature_flag" "payments_kill_switch" {
+  project     = featureflip_project.web.key
+  key         = "payments-kill-switch"
+  name        = "Payments Kill Switch"
+  type        = "Boolean"
+  permanent   = true
+  owner_email = "oncall-lead@example.com"
+}
