@@ -35,5 +35,7 @@ cat > "$ROOT/.env.acceptance" <<EOF
 FEATUREFLIP_BASE_URL=$API
 FEATUREFLIP_ORGANIZATION=$SLUG
 FEATUREFLIP_TOKEN=$FF_TOKEN
+# A member's email, for the owner_email acceptance test.
+FEATUREFLIP_ACC_OWNER_EMAIL=$EMAIL
 EOF
 echo "Seeded org '$SLUG' — wrote .env.acceptance"
