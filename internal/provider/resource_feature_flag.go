@@ -261,7 +261,7 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 
 	f, err := r.client.CreateFlag(ctx, project, creq)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), withExpiryHint(err))
+		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), withLifecycleHint(err, "expires_at"))
 		return
 	}
 	if plan.Archived.ValueBool() {
@@ -341,7 +341,7 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 			}
 		}
 		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Updating expires_at on featureflip_feature_flag %q failed", key), withExpiryHint(err))
+			resp.Diagnostics.AddError(fmt.Sprintf("Updating expires_at on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "expires_at"))
 			return
 		}
 	}
@@ -370,18 +370,6 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		m.Description = types.StringNull()
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
-}
-
-// withExpiryHint appends guidance to the API's expiry rejections.
-func withExpiryHint(err error) string {
-	msg := err.Error()
-	switch {
-	case client.HasCode(err, "EXPIRY_IN_PAST"):
-		msg += "\n\nexpires_at must be in the future when it is set or changed. Pick a later date, or remove expires_at to clear it."
-	case client.HasCode(err, "FEATURE_NOT_ENABLED"):
-		msg += "\n\nFlag expiration dates are not enabled for this organization yet. Remove expires_at until they are."
-	}
-	return msg
 }
 
 // reconcileVariations converges server variations to the planned list, keyed
