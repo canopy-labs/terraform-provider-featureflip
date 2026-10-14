@@ -10,6 +10,9 @@ type Project struct {
 	Key         string  `json:"key"`
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
+	// DefaultFlagLifetimeDays is written through SetDefaultFlagLifetime, never
+	// the project PUT.
+	DefaultFlagLifetimeDays *int `json:"defaultFlagLifetimeDays"`
 }
 
 type CreateProjectRequest struct {
@@ -45,4 +48,16 @@ func (c *Client) UpdateProject(ctx context.Context, key string, req UpdateProjec
 
 func (c *Client) DeleteProject(ctx context.Context, key string) error {
 	return c.do(ctx, http.MethodDelete, c.orgPath("projects", key), nil, nil, nil)
+}
+
+// setDefaultFlagLifetimeRequest has no omitempty on purpose: the API requires
+// days, so removal must be sent as an explicit {"days":null}.
+type setDefaultFlagLifetimeRequest struct {
+	Days *int `json:"days"`
+}
+
+// SetDefaultFlagLifetime sets how many days a temporary flag with no expiry of
+// its own lives before it counts as expired; nil removes the default.
+func (c *Client) SetDefaultFlagLifetime(ctx context.Context, key string, days *int) error {
+	return c.do(ctx, http.MethodPut, c.orgPath("projects", key, "default-flag-lifetime"), nil, setDefaultFlagLifetimeRequest{Days: days}, nil)
 }

@@ -13,6 +13,14 @@ type Variation struct {
 	Description *string `json:"description"`
 }
 
+// FlagOwner is the member responsible for a flag. Only Email is managed by
+// Terraform; the API resolves it to a user.
+type FlagOwner struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 type Flag struct {
 	ID                string      `json:"id"`
 	Key               string      `json:"key"`
@@ -24,6 +32,12 @@ type Flag struct {
 	Tags              []string    `json:"tags"`
 	Variations        []Variation `json:"variations"`
 	ExpiresAtUtc      *string     `json:"expiresAtUtc"`
+	// Owner, IsPermanent and the effective expiry come back on every read;
+	// each is written through its own endpoint, never the flag PUT.
+	Owner                 *FlagOwner `json:"owner"`
+	IsPermanent           bool       `json:"isPermanent"`
+	EffectiveExpiresAtUtc *string    `json:"effectiveExpiresAtUtc"`
+	ExpirySource          *string    `json:"expirySource"`
 }
 
 type VariationInput struct {
@@ -42,10 +56,12 @@ type CreateFlagRequest struct {
 	InitialVariations []VariationInput `json:"initialVariations,omitempty"`
 	ClientSideVisible bool             `json:"clientSideVisible"`
 	ExpiresAtUtc      *string          `json:"expiresAtUtc,omitempty"`
+	OwnerEmail        *string          `json:"ownerEmail,omitempty"`
+	IsPermanent       bool             `json:"isPermanent"`
 }
 
-// UpdateFlagRequest deliberately has no expiry field: the API's flag PUT never
-// touches expiry, which only changes through SetFlagExpiry / ClearFlagExpiry.
+// UpdateFlagRequest deliberately has no expiry, owner or permanent field: the
+// API's flag PUT never touches them, and each has its own endpoints.
 type UpdateFlagRequest struct {
 	Name              string   `json:"name"`
 	Description       *string  `json:"description"`
@@ -119,4 +135,30 @@ func (c *Client) UpdateVariation(ctx context.Context, project, flag, variationID
 
 func (c *Client) DeleteVariation(ctx context.Context, project, flag, variationID string) error {
 	return c.do(ctx, http.MethodDelete, c.orgPath("projects", project, "flags", flag, "variations", variationID), nil, nil, nil)
+}
+
+type setFlagOwnerRequest struct {
+	Email string `json:"email"`
+}
+
+// SetFlagOwner names the flag's owner by email. The API refuses an email that
+// is not an active member of the organization with OWNER_NOT_MEMBER.
+func (c *Client) SetFlagOwner(ctx context.Context, project, key, email string) error {
+	return c.do(ctx, http.MethodPut, c.orgPath("projects", project, "flags", key, "owner"), nil, setFlagOwnerRequest{Email: email}, nil)
+}
+
+// ClearFlagOwner leaves the flag unowned. Always allowed, whatever the plan.
+func (c *Client) ClearFlagOwner(ctx context.Context, project, key string) error {
+	return c.do(ctx, http.MethodDelete, c.orgPath("projects", project, "flags", key, "owner"), nil, nil, nil)
+}
+
+// SetFlagPermanent marks the flag permanent. Refused with
+// PERMANENT_FLAG_HAS_EXPIRY while the flag has an expiry date.
+func (c *Client) SetFlagPermanent(ctx context.Context, project, key string) error {
+	return c.do(ctx, http.MethodPut, c.orgPath("projects", project, "flags", key, "permanent"), nil, nil, nil)
+}
+
+// ClearFlagPermanent makes the flag temporary again. Always allowed.
+func (c *Client) ClearFlagPermanent(ctx context.Context, project, key string) error {
+	return c.do(ctx, http.MethodDelete, c.orgPath("projects", project, "flags", key, "permanent"), nil, nil, nil)
 }
