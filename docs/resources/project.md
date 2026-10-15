@@ -33,7 +33,7 @@ resource "featureflip_project" "web" {
 
 ### Optional
 
-- `default_flag_lifetime_days` (Number) Days a temporary flag with no expires_at of its own lives before it counts as expired (1–3650). Advisory only: evaluation never changes. Omitting it removes the default.
+- `default_flag_lifetime_days` (Number) Days a temporary flag with no expires_at of its own lives before it counts as expired (1–3650), or `0` to remove the default. Advisory only: evaluation never changes. Omitting it leaves the default unmanaged: whatever is set in the dashboard is kept. Reads as `0` when the project has no default.
 - `description` (String)
 
 ### Read-Only

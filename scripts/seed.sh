@@ -23,6 +23,14 @@ token=$(curl -fsS -X POST "$API/api/management/v1/organizations/$ORG_ID/service-
   -d '{"name":"terraform-acceptance","role":"Admin"}')
 FF_TOKEN=$(echo "$token" | jq -re '.token')
 
+# A personal access token for the same user. The API makes a member caller the
+# default owner of the flags it creates (a service token gets none), which the
+# owner and upgrade acceptance tests depend on.
+pat=$(curl -fsS -X POST "$API/api/management/v1/auth/tokens" \
+  -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+  -d '{"name":"terraform-acceptance-member"}')
+MEMBER_TOKEN=$(echo "$pat" | jq -re '.token')
+
 # Solo allows only 1 project / 2 envs — bump to Business in the test DB so
 # acceptance tests aren't plan-limited. Override SEED_PSQL in CI (psql
 # client vs docker exec).
@@ -35,7 +43,9 @@ cat > "$ROOT/.env.acceptance" <<EOF
 FEATUREFLIP_BASE_URL=$API
 FEATUREFLIP_ORGANIZATION=$SLUG
 FEATUREFLIP_TOKEN=$FF_TOKEN
-# A member's email, for the owner_email acceptance test.
+# A member's email, for the owner_email acceptance tests.
 FEATUREFLIP_ACC_OWNER_EMAIL=$EMAIL
+# That member's personal access token, for the creator-as-owner and upgrade tests.
+FEATUREFLIP_ACC_MEMBER_TOKEN=$MEMBER_TOKEN
 EOF
 echo "Seeded org '$SLUG' — wrote .env.acceptance"

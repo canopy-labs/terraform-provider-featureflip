@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
@@ -84,14 +85,53 @@ func TestLifetime(t *testing.T) {
 	}{
 		// A new project with no default must make no lifetime call at all.
 		{"both null", types.Int64Null(), types.Int64Null(), false},
-		{"set", types.Int64Value(30), types.Int64Null(), true},
-		{"removed", types.Int64Null(), types.Int64Value(30), true},
+		{"both none", types.Int64Value(0), types.Int64Value(0), false},
+		// 0 and null both mean "no default": no call.
+		{"none vs null", types.Int64Value(0), types.Int64Null(), false},
+		{"set", types.Int64Value(30), types.Int64Value(0), true},
+		{"removed", types.Int64Value(0), types.Int64Value(30), true},
 		{"same", types.Int64Value(30), types.Int64Value(30), false},
 		{"moved", types.Int64Value(60), types.Int64Value(30), true},
 		{"unknown", types.Int64Unknown(), types.Int64Value(30), false},
 	} {
 		if got := lifetimeChanged(tc.plan, tc.state); got != tc.want {
 			t.Errorf("%s: lifetimeChanged = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestLifetimeWireValue(t *testing.T) {
+	if got := lifetimeWireValue(types.Int64Value(0)); got != nil {
+		t.Errorf("0 must be sent as null (remove the default), got %v", *got)
+	}
+	if got := lifetimeWireValue(types.Int64Value(45)); got == nil || *got != 45 {
+		t.Errorf("45 must be sent as 45, got %v", got)
+	}
+}
+
+func TestResourceLifetimeReadsZeroWhenUnset(t *testing.T) {
+	// The resource reads "no default" as 0, the value that removes it, so a
+	// config of 0 plans clean against a project without one.
+	if got := projectToModel(&client.Project{ID: "p", Key: "p", Name: "P"}); got.DefaultFlagLifetimeDays.ValueInt64() != 0 || got.DefaultFlagLifetimeDays.IsNull() {
+		t.Errorf("no default must read as 0, got %v", got.DefaultFlagLifetimeDays)
+	}
+}
+
+func TestLifetimeValidator(t *testing.T) {
+	for _, tc := range []struct {
+		v  int64
+		ok bool
+	}{
+		{0, true}, // removes the default
+		{1, true},
+		{3650, true},
+		{-1, false},
+		{3651, false},
+	} {
+		var resp validator.Int64Response
+		lifetimeValidator().ValidateInt64(context.Background(), validator.Int64Request{Path: path.Root("default_flag_lifetime_days"), ConfigValue: types.Int64Value(tc.v)}, &resp)
+		if resp.Diagnostics.HasError() == tc.ok {
+			t.Errorf("%d: error=%v, want ok=%v", tc.v, resp.Diagnostics.HasError(), tc.ok)
 		}
 	}
 }
@@ -150,6 +190,8 @@ func TestOwnerEmailValidator(t *testing.T) {
 		// The API trims, so a padded value would come back different and break apply.
 		{" jane@example.com", false},
 		{"jane@example.com ", false},
+		// "" clears the owner.
+		{"", true},
 		{"   ", false},
 		{"not-an-email", false},
 	} {
@@ -164,16 +206,57 @@ func TestOwnerEmailValidator(t *testing.T) {
 func TestShouldClearDefaultOwner(t *testing.T) {
 	owned := &client.Flag{Owner: &client.FlagOwner{Email: "a@b.c"}}
 	unowned := &client.Flag{}
-	if !shouldClearDefaultOwner(types.StringNull(), owned) {
-		t.Error("omitted owner_email with an API-defaulted owner must be cleared")
+	if !shouldClearDefaultOwner(types.StringValue(""), owned) {
+		t.Error(`owner_email = "" with an API-defaulted owner must be cleared`)
 	}
-	if shouldClearDefaultOwner(types.StringNull(), unowned) {
+	if shouldClearDefaultOwner(types.StringUnknown(), owned) {
+		t.Error("an omitted owner_email (unknown in the plan) must keep the API's default owner")
+	}
+	if shouldClearDefaultOwner(types.StringNull(), owned) {
+		t.Error("a null owner_email must keep the API's default owner")
+	}
+	if shouldClearDefaultOwner(types.StringValue(""), unowned) {
 		t.Error("nothing to clear when the API set no owner (service token)")
 	}
 	if shouldClearDefaultOwner(types.StringValue("a@b.c"), owned) {
 		t.Error("a configured owner must never be cleared")
 	}
-	if shouldClearDefaultOwner(types.StringUnknown(), owned) {
-		t.Error("an unknown owner must not be cleared")
+}
+
+func TestOwnerChangedTreatsEmptyAsUnowned(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		plan, state types.String
+		want        bool
+	}{
+		{"clear", types.StringValue(""), types.StringValue("a@b.c"), true},
+		{"already clear", types.StringValue(""), types.StringValue(""), false},
+		{"empty vs null", types.StringValue(""), types.StringNull(), false},
+		{"set from empty", types.StringValue("a@b.c"), types.StringValue(""), true},
+	} {
+		if got := ownerChanged(tc.plan, tc.state); got != tc.want {
+			t.Errorf("%s: ownerChanged = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestOwnerEmailCaseInsensitivePlanModifier(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		config, state types.String
+		want          types.String
+	}{
+		// The case-only difference keeps the prior value, so there's no diff.
+		{"case only", types.StringValue("Bob@Example.com"), types.StringValue("bob@example.com"), types.StringValue("bob@example.com")},
+		{"other owner", types.StringValue("jane@example.com"), types.StringValue("bob@example.com"), types.StringValue("jane@example.com")},
+		{"clear", types.StringValue(""), types.StringValue("bob@example.com"), types.StringValue("")},
+		{"create", types.StringValue("Bob@Example.com"), types.StringNull(), types.StringValue("Bob@Example.com")},
+	} {
+		req := planmodifier.StringRequest{Path: path.Root("owner_email"), ConfigValue: tc.config, StateValue: tc.state, PlanValue: tc.config}
+		resp := planmodifier.StringResponse{PlanValue: tc.config}
+		ownerEmailCaseInsensitive{}.PlanModifyString(context.Background(), req, &resp)
+		if !resp.PlanValue.Equal(tc.want) {
+			t.Errorf("%s: plan = %v, want %v", tc.name, resp.PlanValue, tc.want)
+		}
 	}
 }

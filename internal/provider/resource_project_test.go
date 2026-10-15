@@ -89,10 +89,10 @@ data "featureflip_project" "test" {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				// No default: no lifetime call is made, and the attribute stays null.
+				// No default: no lifetime call is made, and the attribute reads as 0.
 				Config: cfg(""),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckNoResourceAttr("featureflip_project.test", "default_flag_lifetime_days"),
+					resource.TestCheckResourceAttr("featureflip_project.test", "default_flag_lifetime_days", "0"),
 					resource.TestCheckNoResourceAttr("data.featureflip_project.test", "default_flag_lifetime_days"),
 				),
 			},
@@ -114,13 +114,24 @@ data "featureflip_project" "test" {
 				Check:  resource.TestCheckResourceAttr("featureflip_project.test", "default_flag_lifetime_days", "30"),
 			},
 			{
-				Config:      cfg("default_flag_lifetime_days = 0"),
-				ExpectError: regexp.MustCompile(`between 1 and 3650`),
+				Config:      cfg("default_flag_lifetime_days = 3651"),
+				ExpectError: regexp.MustCompile(`between 0 and 3650`),
 			},
 			{
-				// Removing the attribute removes the default ({"days": null}).
+				// Removing the attribute stops managing the default: it is kept.
 				Config: cfg(""),
-				Check:  resource.TestCheckNoResourceAttr("featureflip_project.test", "default_flag_lifetime_days"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("featureflip_project.test", "default_flag_lifetime_days", "30"),
+					resource.TestCheckResourceAttr("data.featureflip_project.test", "default_flag_lifetime_days", "30"),
+				),
+			},
+			{
+				// 0 removes the default ({"days": null}).
+				Config: cfg("default_flag_lifetime_days = 0"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("featureflip_project.test", "default_flag_lifetime_days", "0"),
+					resource.TestCheckNoResourceAttr("data.featureflip_project.test", "default_flag_lifetime_days"),
+				),
 			},
 		},
 	})

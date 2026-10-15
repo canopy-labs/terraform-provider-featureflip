@@ -206,10 +206,18 @@ data "featureflip_feature_flag" "test" {
 				ExpectError: regexp.MustCompile(`active member of the organization`),
 			},
 			{
-				// Removing the attribute leaves the flag unowned (DELETE .../owner).
+				// Removing the attribute stops managing the owner: it is kept.
 				Config: flag(""),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckNoResourceAttr("featureflip_feature_flag.test", "owner_email"),
+					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "owner_email", strings.ToUpper(owner)),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.test", "owner_email", owner),
+				),
+			},
+			{
+				// "" leaves the flag unowned (DELETE .../owner).
+				Config: flag(`owner_email = ""`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "owner_email", ""),
 					resource.TestCheckNoResourceAttr("data.featureflip_feature_flag.test", "owner_email"),
 				),
 			},
@@ -267,8 +275,14 @@ data "featureflip_feature_flag" "test" {
 				ImportStateVerify: true,
 			},
 			{
+				// Omitting permanent keeps the marker, so an expiry on the still-permanent
+				// flag is refused at plan time.
+				Config:      flag(`expires_at = "2099-06-30T00:00:00Z"`),
+				ExpectError: regexp.MustCompile(`Set\s+permanent\s+=\s+false\s+to\s+make\s+it\s+temporary`),
+			},
+			{
 				// And back: permanent is dropped before the expiry is set.
-				Config: flag(`expires_at = "2099-06-30T00:00:00Z"`),
+				Config: flag(`expires_at = "2099-06-30T00:00:00Z"` + "\n  permanent = false"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "permanent", "false"),
 					resource.TestCheckResourceAttr("featureflip_feature_flag.test", "expires_at", "2099-06-30T00:00:00Z"),
