@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -11,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -27,6 +29,7 @@ var (
 	_ resource.ResourceWithConfigure      = (*featureFlagResource)(nil)
 	_ resource.ResourceWithImportState    = (*featureFlagResource)(nil)
 	_ resource.ResourceWithValidateConfig = (*featureFlagResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*featureFlagResource)(nil)
 )
 
 func newFeatureFlagResource() resource.Resource { return &featureFlagResource{} }
@@ -108,18 +111,26 @@ func (r *featureFlagResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"owner_email": schema.StringAttribute{
 				Optional: true,
+				Computed: true,
 				Description: "Email of the organization member responsible for the flag; they get its cleanup notices. " +
-					"Compared case-insensitively. Omitting it leaves the flag unowned, including when the API would " +
-					"otherwise default the owner to the creating user. Needs the Pro plan or above.",
+					"Compared case-insensitively. Set it to `\"\"` to leave the flag unowned. Omitting it leaves the " +
+					"owner unmanaged: whatever the API assigned on create (the creating user, when that is a member " +
+					"rather than a service token) or someone set in the dashboard is kept. Reads as `\"\"` when the " +
+					"flag has no owner. Setting an owner needs the Pro plan or above; clearing one is always allowed.",
 				Validators: []validator.String{ownerEmailValidator()},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					ownerEmailCaseInsensitive{},
+				},
 			},
 			"permanent": schema.BoolAttribute{
 				Optional: true,
 				Computed: true,
-				Default:  booldefault.StaticBool(false),
 				Description: "Marks a flag that is meant to stay (a kill switch, ops toggle or entitlement gate). " +
 					"Permanent flags are never reported for cleanup or past expiry; evaluation never changes. " +
-					"Can't be combined with expires_at.",
+					"Can't be combined with expires_at. Set it to `false` to make the flag temporary. Omitting it " +
+					"leaves the marker unmanaged: whatever is set in the dashboard is kept.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
 			"variations": schema.ListNestedAttribute{
 				Optional:      true,
@@ -159,6 +170,59 @@ func (r *featureFlagResource) ValidateConfig(ctx context.Context, req resource.V
 		resp.Diagnostics.AddAttributeError(path.Root("variations"), "variations required",
 			fmt.Sprintf("%s flags must declare their variations at creation.", cfg.Type.ValueString()))
 	}
+}
+
+// ModifyPlan rejects at plan time what the API would refuse at apply:
+//   - An expiry on a flag that is permanent only through state (permanent
+//     not set in config, so its value is carried over). ValidateConfig catches
+//     the case where both are in config.
+//   - Changes to a flag that stays archived, other than clearing its owner,
+//     permanent marker or expiry. Archived flags are read-only upstream. A
+//     value still unknown at plan time can't be judged yet, so it only warns.
+//
+// A replacement (project, key or type changed) skips both checks: the first
+// plan for it still carries the old state, but the flag that gets written is
+// a new one, created from config.
+func (r *featureFlagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return // destroy
+	}
+	var plan, state featureFlagModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	hasState := !req.State.Raw.IsNull()
+	if hasState {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
+	if resp.Diagnostics.HasError() || (hasState && replacesFlag(plan, state)) {
+		return
+	}
+	if permanentConflictsWithExpiry(plan.Permanent, plan.ExpiresAt) {
+		resp.Diagnostics.AddAttributeError(path.Root("expires_at"), "permanent flag can't have an expiry date",
+			"permanent is true in state and not set in this configuration, so the flag stays permanent, and a "+
+				"permanent flag can't have an expiry date. Set permanent = false to make it temporary, or remove expires_at.")
+	}
+	if !hasState || !state.Archived.ValueBool() || plan.Archived.IsUnknown() || !plan.Archived.ValueBool() {
+		return
+	}
+	if refused := archivedFlagRefusals(planFlagUpdate(ctx, plan, state, &resp.Diagnostics)); len(refused) > 0 {
+		resp.Diagnostics.AddError(fmt.Sprintf("featureflip_feature_flag %q is archived", plan.Key.ValueString()),
+			fmt.Sprintf("An archived flag is read-only: only clearing owner_email, permanent or expires_at is allowed. "+
+				"This plan also changes %s. Set archived = false to restore the flag in the same apply, or revert those changes.",
+				strings.Join(refused, "; ")))
+	}
+	if unknown := unknownOnArchivedFlag(ctx, plan, &resp.Diagnostics); len(unknown) > 0 {
+		resp.Diagnostics.AddWarning(fmt.Sprintf("featureflip_feature_flag %q is archived", plan.Key.ValueString()),
+			fmt.Sprintf("%s won't be known until apply. An archived flag is read-only apart from clearing owner_email, "+
+				"permanent or expires_at, so apply will fail if the value changes anything else. Set archived = false "+
+				"to restore the flag in the same apply if it will.", strings.Join(unknown, ", ")))
+	}
+}
+
+// replacesFlag reports a plan that replaces the flag: project, key and type
+// are exactly the attributes with RequiresReplace. An unknown value may
+// differ, so it counts as a replacement.
+func replacesFlag(plan, state featureFlagModel) bool {
+	return !plan.Project.Equal(state.Project) || !plan.Key.Equal(state.Key) || !plan.Type.Equal(state.Type)
 }
 
 // flagToModel converts an API flag to state. planVariations orders the state
@@ -231,6 +295,21 @@ func flagToModel(ctx context.Context, project string, f *client.Flag, planVariat
 	return m
 }
 
+// flagToResourceModel is flagToModel for resource state. prior is the plan
+// (Create, Update) or state (Read) whose spellings and null description are
+// kept. An unowned flag reads as "", the value that clears an owner, so a
+// config of "" plans clean against it.
+func flagToResourceModel(ctx context.Context, project string, f *client.Flag, prior featureFlagModel, diags *diag.Diagnostics) featureFlagModel {
+	m := flagToModel(ctx, project, f, prior.Variations, prior.Tags, prior.ExpiresAt, prior.OwnerEmail, diags)
+	if prior.Description.IsNull() && f.Description != nil && *f.Description == "" {
+		m.Description = types.StringNull()
+	}
+	if m.OwnerEmail.IsNull() {
+		m.OwnerEmail = types.StringValue("")
+	}
+	return m
+}
+
 // tagsFromSet converts the tags set to a slice for the wire request. It
 // always returns a non-nil slice: the API treats a JSON `null` tags value as
 // "leave unchanged" but an empty array `[]` as "clear", and since tags is
@@ -269,9 +348,12 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 		}
 		creq.ExpiresAtUtc = &wire
 	}
+	// An omitted permanent is unknown here and sent as false, the API default.
 	creq.IsPermanent = plan.Permanent.ValueBool()
 	hintAttr := "expires_at"
-	if !plan.OwnerEmail.IsNull() && !plan.OwnerEmail.IsUnknown() {
+	// "" means unowned: it is not sent (the API would read a blank email as
+	// "none requested" and default the owner), and any default is cleared below.
+	if !plan.OwnerEmail.IsNull() && !plan.OwnerEmail.IsUnknown() && plan.OwnerEmail.ValueString() != "" {
 		creq.OwnerEmail = plan.OwnerEmail.ValueStringPointer()
 		hintAttr = "owner_email"
 	}
@@ -294,12 +376,13 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_feature_flag %q failed", plan.Key.ValueString()), withLifecycleHint(err, hintAttr))
 		return
 	}
-	// Omitted owner_email means unowned, but the API makes a member caller the
-	// owner by default. DELETE is always allowed, whatever the plan.
+	// The API makes a member caller the owner by default. An omitted
+	// owner_email keeps that owner; owner_email = "" clears it. DELETE is
+	// always allowed, whatever the plan.
 	if shouldClearDefaultOwner(plan.OwnerEmail, f) {
 		if err := r.client.ClearFlagOwner(ctx, project, f.Key); err != nil {
 			// Track the flag (it exists) and fail: Terraform taints it and replaces it next apply.
-			resp.Diagnostics.Append(resp.State.Set(ctx, flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics))...)
+			resp.Diagnostics.Append(resp.State.Set(ctx, flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics))...)
 			resp.Diagnostics.AddError(fmt.Sprintf("Clearing the default owner of featureflip_feature_flag %q failed", plan.Key.ValueString()), err.Error())
 			return
 		}
@@ -307,16 +390,14 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 	}
 	if plan.Archived.ValueBool() {
 		if err := r.client.ArchiveFlag(ctx, project, f.Key); err != nil {
+			// Track the flag (it exists) and fail: Terraform taints it and replaces it next apply.
+			resp.Diagnostics.Append(resp.State.Set(ctx, flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics))...)
 			resp.Diagnostics.AddError(fmt.Sprintf("Archiving featureflip_feature_flag %q after create failed", plan.Key.ValueString()), err.Error())
 			return
 		}
 		f.IsArchived = true
 	}
-	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics)
-	if plan.Description.IsNull() && f.Description != nil && *f.Description == "" {
-		m.Description = types.StringNull()
-	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics))...)
 }
 
 func (r *featureFlagResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -334,98 +415,61 @@ func (r *featureFlagResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.Diagnostics.AddError(fmt.Sprintf("Reading featureflip_feature_flag %q failed", state.ID.ValueString()), err.Error())
 		return
 	}
-	m := flagToModel(ctx, state.Project.ValueString(), f, state.Variations, state.Tags, state.ExpiresAt, state.OwnerEmail, &resp.Diagnostics)
-	if state.Description.IsNull() && f.Description != nil && *f.Description == "" {
-		m.Description = types.StringNull()
-	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, flagToResourceModel(ctx, state.Project.ValueString(), f, state, &resp.Diagnostics))...)
 }
 
 func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state featureFlagModel
+	var plan, state, config featureFlagModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	project, key := plan.Project.ValueString(), plan.Key.ValueString()
 
-	// Unarchive first so subsequent edits are accepted upstream.
-	if state.Archived.ValueBool() && !plan.Archived.ValueBool() {
-		if err := r.client.RestoreFlag(ctx, project, key); err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Restoring featureflip_feature_flag %q failed", key), err.Error())
-			return
-		}
-	}
-
-	err := r.client.UpdateFlag(ctx, project, key, client.UpdateFlagRequest{
-		Name:              plan.Name.ValueString(),
-		Description:       plan.Description.ValueStringPointer(),
-		Tags:              r.tagsFromSet(ctx, plan.Tags, &resp.Diagnostics),
-		ClientSideVisible: plan.ClientSideVisible.ValueBool(),
-	})
-	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Updating featureflip_feature_flag %q failed", key), err.Error())
+	steps := planFlagUpdate(ctx, plan, state, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// Lifecycle fields have their own endpoints; the flag PUT above never
-	// touches them. Order matters because the API refuses a permanent flag
-	// with an expiry: drop permanent before an expiry is set, and set
-	// permanent only after the expiry is cleared.
-	if state.Permanent.ValueBool() && !plan.Permanent.ValueBool() {
-		if err := r.client.ClearFlagPermanent(ctx, project, key); err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Updating permanent on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "permanent"))
-			return
-		}
-	}
-
-	// Only call the expiry endpoints on a real change, so an expiry that has
-	// since passed never trips EXPIRY_IN_PAST on an unrelated update.
-	if !plan.ExpiresAt.IsUnknown() && expiryChanged(plan.ExpiresAt, state.ExpiresAt) {
-		if plan.ExpiresAt.IsNull() {
-			err = r.client.ClearFlagExpiry(ctx, project, key)
-		} else {
+	for _, step := range steps {
+		var err error
+		attribute := ""
+		switch step {
+		case stepRestore:
+			err = r.client.RestoreFlag(ctx, project, key)
+		case stepPut:
+			err = r.client.UpdateFlag(ctx, project, key, client.UpdateFlagRequest{
+				Name:              plan.Name.ValueString(),
+				Description:       plan.Description.ValueStringPointer(),
+				Tags:              r.tagsFromSet(ctx, plan.Tags, &resp.Diagnostics),
+				ClientSideVisible: plan.ClientSideVisible.ValueBool(),
+			})
+		case stepClearPermanent:
+			attribute, err = "permanent", r.client.ClearFlagPermanent(ctx, project, key)
+		case stepSetPermanent:
+			attribute, err = "permanent", r.client.SetFlagPermanent(ctx, project, key)
+		case stepClearExpiry:
+			attribute, err = "expires_at", r.client.ClearFlagExpiry(ctx, project, key)
+		case stepSetExpiry:
+			attribute = "expires_at"
 			var wire string
 			if wire, err = expiryWireValue(plan.ExpiresAt); err == nil {
 				err = r.client.SetFlagExpiry(ctx, project, key, wire)
 			}
+		case stepClearOwner:
+			attribute, err = "owner_email", r.client.ClearFlagOwner(ctx, project, key)
+		case stepSetOwner:
+			attribute, err = "owner_email", r.client.SetFlagOwner(ctx, project, key, plan.OwnerEmail.ValueString())
+		case stepVariations:
+			if ok := r.reconcileVariations(ctx, project, key, plan.Variations, &resp.Diagnostics); !ok {
+				return
+			}
+		case stepArchive:
+			err = r.client.ArchiveFlag(ctx, project, key)
 		}
 		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Updating expires_at on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "expires_at"))
-			return
-		}
-	}
-
-	if !state.Permanent.ValueBool() && plan.Permanent.ValueBool() {
-		if err := r.client.SetFlagPermanent(ctx, project, key); err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Updating permanent on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "permanent"))
-			return
-		}
-	}
-
-	if !plan.OwnerEmail.IsUnknown() && ownerChanged(plan.OwnerEmail, state.OwnerEmail) {
-		if plan.OwnerEmail.IsNull() {
-			err = r.client.ClearFlagOwner(ctx, project, key)
-		} else {
-			err = r.client.SetFlagOwner(ctx, project, key, plan.OwnerEmail.ValueString())
-		}
-		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Updating owner_email on featureflip_feature_flag %q failed", key), withLifecycleHint(err, "owner_email"))
-			return
-		}
-	}
-
-	if !plan.Variations.IsNull() && !plan.Variations.IsUnknown() {
-		if ok := r.reconcileVariations(ctx, project, key, plan.Variations, &resp.Diagnostics); !ok {
-			return
-		}
-	}
-
-	// Archive last so all edits above land on an active flag.
-	if !state.Archived.ValueBool() && plan.Archived.ValueBool() {
-		if err := r.client.ArchiveFlag(ctx, project, key); err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Archiving featureflip_feature_flag %q failed", key), err.Error())
+			resp.Diagnostics.AddError(updateStepSummary(step, attribute, key), updateStepDetail(err, attribute))
 			return
 		}
 	}
@@ -435,11 +479,32 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError(fmt.Sprintf("Re-reading featureflip_feature_flag %q after update failed", key), err.Error())
 		return
 	}
-	m := flagToModel(ctx, project, f, plan.Variations, plan.Tags, plan.ExpiresAt, plan.OwnerEmail, &resp.Diagnostics)
-	if plan.Description.IsNull() && f.Description != nil && *f.Description == "" {
-		m.Description = types.StringNull()
-	}
+	m := flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics)
+	// Unmanaged lifecycle attributes were planned from state. Keep that value
+	// even if the dashboard moved it since the plan, or Terraform reports an
+	// inconsistent result; the next Read picks up the new value.
+	m.OwnerEmail = plannedIfUnmanaged(config.OwnerEmail, plan.OwnerEmail, m.OwnerEmail)
+	m.Permanent = plannedIfUnmanaged(config.Permanent, plan.Permanent, m.Permanent)
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
+}
+
+func updateStepSummary(step flagUpdateStep, attribute, key string) string {
+	switch {
+	case step == stepRestore:
+		return fmt.Sprintf("Restoring featureflip_feature_flag %q failed", key)
+	case step == stepArchive:
+		return fmt.Sprintf("Archiving featureflip_feature_flag %q failed", key)
+	case attribute != "":
+		return fmt.Sprintf("Updating %s on featureflip_feature_flag %q failed", attribute, key)
+	}
+	return fmt.Sprintf("Updating featureflip_feature_flag %q failed", key)
+}
+
+func updateStepDetail(err error, attribute string) string {
+	if attribute == "" {
+		return err.Error()
+	}
+	return withLifecycleHint(err, attribute)
 }
 
 // reconcileVariations converges server variations to the planned list, keyed

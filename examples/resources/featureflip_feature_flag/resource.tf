@@ -40,3 +40,15 @@ resource "featureflip_feature_flag" "payments_kill_switch" {
   permanent   = true
   owner_email = "oncall-lead@example.com"
 }
+
+# owner_email and permanent are opt-in: omit them to leave the values to the
+# dashboard (and, for owner_email, to the API's default of the creating user).
+# Set them explicitly to manage them; owner_email = "" keeps a flag unowned.
+resource "featureflip_feature_flag" "experiment" {
+  project     = featureflip_project.web.key
+  key         = "search-ranking-v2"
+  name        = "Search Ranking v2"
+  type        = "Boolean"
+  owner_email = ""
+  permanent   = false
+}

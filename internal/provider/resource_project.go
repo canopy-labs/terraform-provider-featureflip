@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -58,37 +58,44 @@ func (r *projectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"description": schema.StringAttribute{Optional: true},
 			"default_flag_lifetime_days": schema.Int64Attribute{
 				Optional: true,
+				Computed: true,
 				Description: "Days a temporary flag with no expires_at of its own lives before it counts as expired " +
-					"(1–3650). Advisory only: evaluation never changes. Omitting it removes the default.",
-				Validators: []validator.Int64{int64validator.Between(1, 3650)},
+					"(1–3650), or `0` to remove the default. Advisory only: evaluation never changes. Omitting it " +
+					"leaves the default unmanaged: whatever is set in the dashboard is kept. Reads as `0` when the " +
+					"project has no default.",
+				Validators:    []validator.Int64{lifetimeValidator()},
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
 			},
 		},
 	}
 }
 
+// projectToModel converts an API project to resource state. A project with no
+// default flag lifetime reads as 0, the value that removes one, so a config
+// of 0 plans clean against it.
 func projectToModel(p *client.Project) projectModel {
+	lifetime := lifetimeToModel(p.DefaultFlagLifetimeDays)
+	if lifetime.IsNull() {
+		lifetime = types.Int64Value(0)
+	}
 	return projectModel{
 		ID:          types.StringValue(p.ID),
 		Key:         types.StringValue(p.Key),
 		Name:        types.StringValue(p.Name),
 		Description: types.StringPointerValue(p.Description),
 
-		DefaultFlagLifetimeDays: lifetimeToModel(p.DefaultFlagLifetimeDays),
+		DefaultFlagLifetimeDays: lifetime,
 	}
 }
 
 // setLifetime writes default_flag_lifetime_days when it differs from what the
-// server holds. It is its own endpoint; the project PUT never touches it.
+// server holds. It is its own endpoint; the project PUT never touches it. An
+// unknown plan (omitted on create) makes no call.
 func (r *projectResource) setLifetime(ctx context.Context, key string, plan, current types.Int64) error {
 	if !lifetimeChanged(plan, current) {
 		return nil
 	}
-	var days *int
-	if !plan.IsNull() {
-		d := int(plan.ValueInt64())
-		days = &d
-	}
-	return r.client.SetDefaultFlagLifetime(ctx, key, days)
+	return r.client.SetDefaultFlagLifetime(ctx, key, lifetimeWireValue(plan))
 }
 
 func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -118,7 +125,9 @@ func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest
 			withLifecycleHint(err, "default_flag_lifetime_days"))
 		return
 	}
-	m.DefaultFlagLifetimeDays = plan.DefaultFlagLifetimeDays
+	if !plan.DefaultFlagLifetimeDays.IsUnknown() {
+		m.DefaultFlagLifetimeDays = plan.DefaultFlagLifetimeDays
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
 }
 
@@ -146,9 +155,10 @@ func (r *projectResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state projectModel
+	var plan, state, config projectModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -174,6 +184,9 @@ func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest
 	if plan.Description.IsNull() && p.Description != nil && *p.Description == "" {
 		m.Description = types.StringNull()
 	}
+	// An unmanaged lifetime was planned from state; keep it even if the
+	// dashboard moved it since the plan. The next Read picks up the change.
+	m.DefaultFlagLifetimeDays = plannedIfUnmanaged(config.DefaultFlagLifetimeDays, plan.DefaultFlagLifetimeDays, m.DefaultFlagLifetimeDays)
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
 }
 
