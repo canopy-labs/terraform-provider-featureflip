@@ -242,11 +242,28 @@ resource "featureflip_feature_flag" "unowned" {
   name        = "Unowned"
   type        = "Boolean"
   owner_email = ""
+}
+# Created archived: the default owner is cleared before the archive, which
+# would otherwise make the flag read-only first (clearing is allowed anyway).
+resource "featureflip_feature_flag" "archived_unowned" {
+  project     = featureflip_project.test.key
+  key         = "archived-unowned"
+  name        = "Archived Unowned"
+  type        = "Boolean"
+  archived    = true
+  owner_email = ""
+}
+data "featureflip_feature_flag" "archived_unowned" {
+  project = featureflip_feature_flag.archived_unowned.project
+  key     = featureflip_feature_flag.archived_unowned.key
 }`,
 			Check: resource.ComposeAggregateTestCheckFunc(
 				resource.TestCheckResourceAttr("featureflip_feature_flag.defaulted", "owner_email", member),
 				resource.TestCheckResourceAttr("featureflip_feature_flag.defaulted", "permanent", "false"),
 				resource.TestCheckResourceAttr("featureflip_feature_flag.unowned", "owner_email", ""),
+				resource.TestCheckResourceAttr("featureflip_feature_flag.archived_unowned", "owner_email", ""),
+				resource.TestCheckResourceAttr("data.featureflip_feature_flag.archived_unowned", "archived", "true"),
+				resource.TestCheckNoResourceAttr("data.featureflip_feature_flag.archived_unowned", "owner_email"),
 			),
 		}},
 	})
@@ -329,6 +346,108 @@ data "featureflip_feature_flag" "exp" {
 					resource.TestCheckResourceAttr("data.featureflip_feature_flag.perm", "name", "Perm Restored"),
 					resource.TestCheckResourceAttr("data.featureflip_feature_flag.perm", "owner_email", owner),
 					resource.TestCheckResourceAttr("data.featureflip_feature_flag.perm", "permanent", "true"),
+				),
+			},
+		},
+	})
+}
+
+// Archiving and setting lifecycle values in one apply: the sets run while the
+// flag is still active, then it is archived.
+func TestAccLifecycle_archiveWithLifecycleSets(t *testing.T) {
+	owner := testAccOwnerEmail(t)
+	proj := acctest.RandomWithPrefix("tf-acc-proj")
+	cfg := func(archived bool, perm, exp string) string {
+		return testAccFlagProjectConfig(proj) + fmt.Sprintf(`
+resource "featureflip_feature_flag" "perm" {
+  project  = featureflip_project.test.key
+  key      = "perm"
+  name     = "Perm"
+  type     = "Boolean"
+  archived = %[1]t
+  %[2]s
+}
+resource "featureflip_feature_flag" "exp" {
+  project  = featureflip_project.test.key
+  key      = "exp"
+  name     = "Exp"
+  type     = "Boolean"
+  archived = %[1]t
+  %[3]s
+}
+data "featureflip_feature_flag" "perm" {
+  project = featureflip_feature_flag.perm.project
+  key     = featureflip_feature_flag.perm.key
+}
+data "featureflip_feature_flag" "exp" {
+  project = featureflip_feature_flag.exp.project
+  key     = featureflip_feature_flag.exp.key
+}`, archived, perm, exp)
+	}
+	owned := fmt.Sprintf("owner_email = %q", owner)
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg(false, "", "")},
+			{
+				Config: cfg(true, owned+"\n  permanent = true", owned+"\n  expires_at = \"2099-01-31T00:00:00Z\""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.perm", "archived", "true"),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.perm", "owner_email", owner),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.perm", "permanent", "true"),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.exp", "archived", "true"),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.exp", "owner_email", owner),
+					resource.TestCheckResourceAttr("data.featureflip_feature_flag.exp", "expires_at", "2099-01-31T00:00:00Z"),
+				),
+			},
+		},
+	})
+}
+
+// Changing key or type replaces the flag. The archived-flag and
+// permanent-flag plan checks are about updating the old flag in place, so
+// they must not refuse a replacement.
+func TestAccLifecycle_replacement(t *testing.T) {
+	proj := acctest.RandomWithPrefix("tf-acc-proj")
+	cfg := func(archivedKey, archivedName, permKey, permExtra string) string {
+		return testAccFlagProjectConfig(proj) + fmt.Sprintf(`
+resource "featureflip_feature_flag" "archived" {
+  project  = featureflip_project.test.key
+  key      = %q
+  name     = %q
+  type     = "Boolean"
+  archived = true
+}
+resource "featureflip_feature_flag" "perm" {
+  project = featureflip_project.test.key
+  key     = %q
+  name    = "Perm"
+  type    = "Boolean"
+  %s
+}`, archivedKey, archivedName, permKey, permExtra)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg("old", "Old", "perm-old", "permanent = true")},
+			{
+				// Removing permanent = true leaves it unmanaged (true in state), and the
+				// new expiry would conflict with it on an in-place update.
+				Config:      cfg("old", "Old", "perm-old", `expires_at = "2099-01-31T00:00:00Z"`),
+				ExpectError: regexp.MustCompile(`permanent is true in state and not set in this configuration`),
+			},
+			{
+				// Key changes: both flags are replaced, the new perm flag is created with the expiry.
+				Config: cfg("new", "Renamed", "perm-new", `expires_at = "2099-01-31T00:00:00Z"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("featureflip_feature_flag.archived", "key", "new"),
+					resource.TestCheckResourceAttr("featureflip_feature_flag.archived", "archived", "true"),
+					resource.TestCheckResourceAttr("featureflip_feature_flag.archived", "name", "Renamed"),
+					resource.TestCheckResourceAttr("featureflip_feature_flag.perm", "key", "perm-new"),
+					resource.TestCheckResourceAttr("featureflip_feature_flag.perm", "permanent", "false"),
+					resource.TestCheckResourceAttr("featureflip_feature_flag.perm", "expires_at", "2099-01-31T00:00:00Z"),
 				),
 			},
 		},

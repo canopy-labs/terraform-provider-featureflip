@@ -100,18 +100,71 @@ func archivedFlagRefusals(steps []flagUpdateStep) []string {
 
 func known(v attr.Value) bool { return !v.IsUnknown() }
 
+// fullyKnown also looks inside collections: a set with an unknown element is
+// itself known, but can't be compared yet.
+func fullyKnown(v attr.Value) bool {
+	tv, err := v.ToTerraformValue(context.Background())
+	return err == nil && tv.IsFullyKnown()
+}
+
 // differs reports a known planned value that differs from state. An unknown
-// value is not a change yet: plan-time checks skip it, and at apply every
-// value Update compares comes from config and is known.
+// value is not a change yet: plan-time checks warn about it instead (see
+// unknownOnArchivedFlag), and at apply every value Update compares comes from
+// config and is known.
 func differs(plan, state attr.Value) bool {
-	return known(plan) && !plan.Equal(state)
+	return fullyKnown(plan) && !plan.Equal(state)
+}
+
+// unknownOnArchivedFlag names the attributes still unknown at plan time that
+// could resolve to a change the API refuses on an archived flag.
+func unknownOnArchivedFlag(ctx context.Context, plan featureFlagModel, diags *diag.Diagnostics) []string {
+	var unknown []string
+	for _, a := range []struct {
+		name string
+		v    attr.Value
+	}{
+		{"name", plan.Name}, {"description", plan.Description}, {"tags", plan.Tags},
+		{"client_side_visible", plan.ClientSideVisible}, {"expires_at", plan.ExpiresAt},
+		{"permanent", plan.Permanent}, {"owner_email", plan.OwnerEmail},
+	} {
+		if !fullyKnown(a.v) {
+			unknown = append(unknown, a.name)
+		}
+	}
+	if variationsUnknown(ctx, plan.Variations, diags) {
+		unknown = append(unknown, "variations")
+	}
+	return unknown
+}
+
+// variationsUnknown reports planned variations whose configured fields are not
+// all known yet. Ids are computed and always unknown in a plan with changes,
+// so they don't count.
+func variationsUnknown(ctx context.Context, plan types.List, diags *diag.Diagnostics) bool {
+	if plan.IsNull() {
+		return false
+	}
+	if plan.IsUnknown() {
+		return true
+	}
+	var pv []variationModel
+	diags.Append(plan.ElementsAs(ctx, &pv, false)...)
+	for _, v := range pv {
+		for _, f := range []attr.Value{v.Key, v.Name, v.Value, v.Description} {
+			if f.IsUnknown() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // variationsChanged compares variations by key, name, value and description.
 // Ids are computed (unknown in a plan with changes) and the API does not keep
-// order, so neither counts. A null or unknown plan (Boolean flags) is no change.
+// order, so neither counts. A null plan (Boolean flags) is no change, and
+// neither is one with unknown fields yet.
 func variationsChanged(ctx context.Context, plan, state types.List, diags *diag.Diagnostics) bool {
-	if plan.IsNull() || plan.IsUnknown() {
+	if plan.IsNull() || variationsUnknown(ctx, plan, diags) {
 		return false
 	}
 	if state.IsNull() || state.IsUnknown() {

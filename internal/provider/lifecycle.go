@@ -3,11 +3,12 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -161,10 +162,41 @@ func withLifecycleHint(err error, attribute string) string {
 
 // ownerEmailValidator accepts "" (no owner) or an email with no surrounding
 // whitespace. The API trims the value, so a padded one would come back
-// different from the plan.
+// different from the plan. The regexp's \S is ASCII-only, so the trim check
+// also catches Unicode spaces (NBSP, em space) and \v.
 func ownerEmailValidator() validator.String {
-	return stringvalidator.RegexMatches(regexp.MustCompile(`^$|^\S+@\S+$`),
-		`must be "" (no owner) or an email address with no surrounding whitespace`)
+	return ownerEmailFormat{}
+}
+
+var ownerEmailPattern = regexp.MustCompile(`^$|^\S+@\S+$`)
+
+type ownerEmailFormat struct{}
+
+func (ownerEmailFormat) Description(context.Context) string {
+	return `must be "" (no owner) or an email address with no surrounding whitespace`
+}
+
+func (v ownerEmailFormat) MarkdownDescription(ctx context.Context) string { return v.Description(ctx) }
+
+func (v ownerEmailFormat) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	s := req.ConfigValue.ValueString()
+	if !ownerEmailPattern.MatchString(s) || strings.TrimSpace(s) != s {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid owner_email",
+			fmt.Sprintf("Attribute %s %s, got %q.", req.Path, v.Description(ctx), s))
+	}
+}
+
+// plannedIfUnmanaged is the value state records after an apply. An attribute
+// the config doesn't set was planned from state; recording the server's value
+// instead would contradict the plan if the dashboard moved it meanwhile.
+func plannedIfUnmanaged[T attr.Value](config, plan, server T) T {
+	if config.IsNull() && !plan.IsUnknown() && !plan.IsNull() {
+		return plan
+	}
+	return server
 }
 
 // shouldClearDefaultOwner reports whether a just-created flag has an owner the

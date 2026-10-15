@@ -155,9 +155,10 @@ func (r *projectResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state projectModel
+	var plan, state, config projectModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -183,6 +184,9 @@ func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest
 	if plan.Description.IsNull() && p.Description != nil && *p.Description == "" {
 		m.Description = types.StringNull()
 	}
+	// An unmanaged lifetime was planned from state; keep it even if the
+	// dashboard moved it since the plan. The next Read picks up the change.
+	m.DefaultFlagLifetimeDays = plannedIfUnmanaged(config.DefaultFlagLifetimeDays, plan.DefaultFlagLifetimeDays, m.DefaultFlagLifetimeDays)
 	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
 }
 

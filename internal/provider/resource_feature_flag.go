@@ -174,30 +174,34 @@ func (r *featureFlagResource) ValidateConfig(ctx context.Context, req resource.V
 
 // ModifyPlan rejects at plan time what the API would refuse at apply:
 //   - An expiry on a flag that is permanent only through state (permanent
-//     omitted from config, set in the dashboard). ValidateConfig catches the
-//     case where both are in config.
+//     not set in config, so its value is carried over). ValidateConfig catches
+//     the case where both are in config.
 //   - Changes to a flag that stays archived, other than clearing its owner,
-//     permanent marker or expiry. Archived flags are read-only upstream.
+//     permanent marker or expiry. Archived flags are read-only upstream. A
+//     value still unknown at plan time can't be judged yet, so it only warns.
+//
+// A replacement (project, key or type changed) skips both checks: the first
+// plan for it still carries the old state, but the flag that gets written is
+// a new one, created from config.
 func (r *featureFlagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return // destroy
 	}
-	var plan featureFlagModel
+	var plan, state featureFlagModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
+	hasState := !req.State.Raw.IsNull()
+	if hasState {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
+	if resp.Diagnostics.HasError() || (hasState && replacesFlag(plan, state)) {
 		return
 	}
 	if permanentConflictsWithExpiry(plan.Permanent, plan.ExpiresAt) {
 		resp.Diagnostics.AddAttributeError(path.Root("expires_at"), "permanent flag can't have an expiry date",
-			"The flag is marked permanent (outside this configuration, since permanent is not set here), and a "+
+			"permanent is true in state and not set in this configuration, so the flag stays permanent, and a "+
 				"permanent flag can't have an expiry date. Set permanent = false to make it temporary, or remove expires_at.")
 	}
-	if req.State.Raw.IsNull() {
-		return // create
-	}
-	var state featureFlagModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() || !state.Archived.ValueBool() || plan.Archived.IsUnknown() || !plan.Archived.ValueBool() {
+	if !hasState || !state.Archived.ValueBool() || plan.Archived.IsUnknown() || !plan.Archived.ValueBool() {
 		return
 	}
 	if refused := archivedFlagRefusals(planFlagUpdate(ctx, plan, state, &resp.Diagnostics)); len(refused) > 0 {
@@ -206,6 +210,19 @@ func (r *featureFlagResource) ModifyPlan(ctx context.Context, req resource.Modif
 				"This plan also changes %s. Set archived = false to restore the flag in the same apply, or revert those changes.",
 				strings.Join(refused, "; ")))
 	}
+	if unknown := unknownOnArchivedFlag(ctx, plan, &resp.Diagnostics); len(unknown) > 0 {
+		resp.Diagnostics.AddWarning(fmt.Sprintf("featureflip_feature_flag %q is archived", plan.Key.ValueString()),
+			fmt.Sprintf("%s won't be known until apply. An archived flag is read-only apart from clearing owner_email, "+
+				"permanent or expires_at, so apply will fail if the value changes anything else. Set archived = false "+
+				"to restore the flag in the same apply if it will.", strings.Join(unknown, ", ")))
+	}
+}
+
+// replacesFlag reports a plan that replaces the flag: project, key and type
+// are exactly the attributes with RequiresReplace. An unknown value may
+// differ, so it counts as a replacement.
+func replacesFlag(plan, state featureFlagModel) bool {
+	return !plan.Project.Equal(state.Project) || !plan.Key.Equal(state.Key) || !plan.Type.Equal(state.Type)
 }
 
 // flagToModel converts an API flag to state. planVariations orders the state
@@ -373,6 +390,8 @@ func (r *featureFlagResource) Create(ctx context.Context, req resource.CreateReq
 	}
 	if plan.Archived.ValueBool() {
 		if err := r.client.ArchiveFlag(ctx, project, f.Key); err != nil {
+			// Track the flag (it exists) and fail: Terraform taints it and replaces it next apply.
+			resp.Diagnostics.Append(resp.State.Set(ctx, flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics))...)
 			resp.Diagnostics.AddError(fmt.Sprintf("Archiving featureflip_feature_flag %q after create failed", plan.Key.ValueString()), err.Error())
 			return
 		}
@@ -400,9 +419,10 @@ func (r *featureFlagResource) Read(ctx context.Context, req resource.ReadRequest
 }
 
 func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state featureFlagModel
+	var plan, state, config featureFlagModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -459,7 +479,13 @@ func (r *featureFlagResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError(fmt.Sprintf("Re-reading featureflip_feature_flag %q after update failed", key), err.Error())
 		return
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics))...)
+	m := flagToResourceModel(ctx, project, f, plan, &resp.Diagnostics)
+	// Unmanaged lifecycle attributes were planned from state. Keep that value
+	// even if the dashboard moved it since the plan, or Terraform reports an
+	// inconsistent result; the next Read picks up the new value.
+	m.OwnerEmail = plannedIfUnmanaged(config.OwnerEmail, plan.OwnerEmail, m.OwnerEmail)
+	m.Permanent = plannedIfUnmanaged(config.Permanent, plan.Permanent, m.Permanent)
+	resp.Diagnostics.Append(resp.State.Set(ctx, m)...)
 }
 
 func updateStepSummary(step flagUpdateStep, attribute, key string) string {

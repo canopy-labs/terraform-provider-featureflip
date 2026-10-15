@@ -38,7 +38,9 @@ configuration plans with no changes after the upgrade:
 - **Removing one of these attributes from config stops managing it**; it does not clear the value.
 - **Archived flags are read-only**, apart from clearing the owner, the permanent marker or the
   expiry. A plan that would change anything else on a flag that stays archived fails at plan time;
-  set `archived = false` in the same apply to restore it first.
+  set `archived = false` in the same apply to restore it first. A value that isn't known until
+  apply (one computed from another resource) can't be checked at plan time: the plan warns, and
+  the apply fails if the value turns out to change the archived flag.
 
 ## Development
 
