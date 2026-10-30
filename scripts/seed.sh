@@ -5,7 +5,10 @@ set -euo pipefail
 
 API="${1:-http://localhost:5000}"
 SUFFIX="$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-EMAIL="tf-acc-${SUFFIX}@example.com"
+# An Auth:AutoVerifyDomains domain in upstream's appsettings.Development.json, so
+# the account is verified at signup: upstream refuses personal access tokens on
+# an unverified account (canopy-labs/featureflip#4632), and the PAT below needs one.
+EMAIL="tf-acc-${SUFFIX}@test.featureflip.dev"
 SLUG="tf-acc-${SUFFIX}"
 PASSWORD="TfAcc-P4ssw0rd-${SUFFIX}"
 
