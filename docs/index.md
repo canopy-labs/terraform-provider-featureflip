@@ -35,8 +35,49 @@ provider "featureflip" {
   organization = "acme-corp"
   # token via FEATUREFLIP_TOKEN environment variable (recommended),
   # or: token = var.featureflip_token
+
+  # Why this run makes its changes; required by environments that require
+  # change reasons. Or set FEATUREFLIP_CHANGE_REASON.
+  # change_reason = var.change_reason
 }
 ```
+
+## Change reasons and critical environments
+
+An environment with `require_change_reason` set (Business plan and above) refuses any write that
+changes its flags unless the request carries a change reason, which is recorded in the audit log.
+Project-wide writes are refused too while *any* environment in the project requires one: segments,
+variations, flag archive/restore/delete, a `client_side_visible` change, and deleting the project
+itself (so `terraform destroy` as well). A refused write fails with `change_reason_required`.
+
+On a Business plan a new project's `production` environment starts with `require_change_reason`
+set, including a project created by `featureflip_project`.
+
+Set the reason on the provider, and pass a new one each run:
+
+```terraform
+variable "change_reason" {
+  type    = string
+  default = null
+}
+
+provider "featureflip" {
+  organization  = "acme-corp"
+  change_reason = var.change_reason
+}
+```
+
+```shell
+terraform apply -var 'change_reason=Roll out new checkout to EU (CHG-1234)'
+```
+
+Or set `FEATUREFLIP_CHANGE_REASON` in CI. The reason goes with every write in the run, including
+writes to environments that don't require one.
+
+`featureflip_environment` manages the setting through `require_change_reason` and
+`require_confirmation`. Leave either out and Terraform won't touch what is set in the dashboard.
+Turning either one off needs a token with the Admin or Owner role, and a change reason.
+`require_confirmation` only affects the dashboard.
 
 ## Upgrading to v0.4.0
 
@@ -64,5 +105,6 @@ configuration plans with no changes after the upgrade:
 ### Optional
 
 - `base_url` (String) API base URL. Defaults to https://api.featureflip.io. May also be set via FEATUREFLIP_BASE_URL.
+- `change_reason` (String) Why this run makes its changes. Sent with every write and recorded in the audit log. Required when a write reaches an environment with `require_change_reason` set (directly, or through a project-wide change such as a segment or a flag archive/delete); without it those writes fail with change_reason_required. Pass a new reason each run, e.g. `change_reason = var.change_reason`. At most 2048 characters (longer is truncated); no control characters other than tab and newline. May also be set via FEATUREFLIP_CHANGE_REASON.
 - `organization` (String) Organization slug. May also be set via the FEATUREFLIP_ORGANIZATION environment variable.
 - `token` (String, Sensitive) API token (ffs_… service token recommended, or ffp_… personal access token). May also be set via FEATUREFLIP_TOKEN. Tokens are created in the Featureflip dashboard.

@@ -27,3 +27,20 @@ func TestTokenFormatOK(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckChangeReason(t *testing.T) {
+	for reason, ok := range map[string]bool{
+		"":                          true,
+		"Roll out checkout to 50%":  true,
+		"multi\nline\twith\r\nends": true,
+		"emoji 🚀 and ünïcödé":       true,
+		"nul \x00 byte":             false,
+		"escape \x1b[31m":           false,
+		"c1 control \u0085":         false,
+		"bad utf-8 \xff":            false,
+	} {
+		if err := checkChangeReason(reason); (err == nil) != ok {
+			t.Errorf("checkChangeReason(%q) = %v, want ok=%v", reason, err, ok)
+		}
+	}
+}

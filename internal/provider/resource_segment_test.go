@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -81,23 +82,12 @@ resource "featureflip_segment" "test" {
 	})
 }
 
-// TestAccSegment_slashKeyCreate proves the upstream API accepts a
-// slash-bearing segment key at create (segment keys have no upstream format
-// constraint, unlike project/flag keys) and that the provider round-trips it
-// in state. It does NOT exercise ImportState/splitImportIDTail: direct API
-// probing (POST + GET against the local stack) confirmed the server's
-// GET-by-key route 404s for any key containing "/", whether the slash is
-// sent literally or percent-encoded (%2F) — a server-side route-matching
-// gap, not a defect in this provider's request construction (segments.go
-// already URL-escapes each path segment individually; see TestOrgPathEscapes
-// / TestDoPreservesEscapedPathSegments in internal/client). Terraform's Read
-// (and therefore Import) goes through that same GET, so a live import of a
-// slash-containing key can't round-trip until upstream fixes the lookup
-// route; the same limitation blocks environment and flag_environment imports
-// with slashed environment keys. splitImportIDTail's parsing is covered at
-// the unit level by TestSplitImportIDTail — see TODO.md for the upstream
-// follow-up.
-func TestAccSegment_slashKeyCreate(t *testing.T) {
+// TestAccSegment_slashKeyRejected pins the upstream segment-key format: since
+// feature-flagger#1795 the API refuses a key with "/" (or any character
+// outside lowercase letters, digits, hyphens and underscores) at create, so
+// create and get-by-key agree. It used to accept one that it could not then
+// read back.
+func TestAccSegment_slashKeyRejected(t *testing.T) {
 	proj := acctest.RandomWithPrefix("tf-acc-proj")
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -115,10 +105,7 @@ resource "featureflip_segment" "test" {
   key     = "eu/west"
   name    = "EU West"
 }`, proj),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("featureflip_segment.test", "key", "eu/west"),
-					resource.TestCheckResourceAttrSet("featureflip_segment.test", "id"),
-				),
+				ExpectError: regexp.MustCompile(`Segment key must be lowercase alphanumeric with hyphens or\s+underscores`),
 			},
 		},
 	})

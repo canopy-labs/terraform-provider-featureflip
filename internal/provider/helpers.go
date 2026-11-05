@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -21,6 +24,21 @@ func stringOr(v types.String, fallback string) string {
 
 func tokenFormatOK(token string) bool {
 	return strings.HasPrefix(token, "ffs_") || strings.HasPrefix(token, "ffp_")
+}
+
+// checkChangeReason refuses a reason the API would refuse (400): one that is not
+// valid UTF-8 or carries a control character other than tab, newline or
+// carriage return.
+func checkChangeReason(reason string) error {
+	if !utf8.ValidString(reason) {
+		return errors.New("change_reason must be valid UTF-8 text")
+	}
+	for _, r := range reason {
+		if unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' {
+			return fmt.Errorf("change_reason contains the control character %U; only tab, newline and carriage return are allowed", r)
+		}
+	}
+	return nil
 }
 
 // resourceWithClient is embedded by every resource to receive the

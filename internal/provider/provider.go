@@ -31,6 +31,7 @@ type providerModel struct {
 	Organization types.String `tfsdk:"organization"`
 	Token        types.String `tfsdk:"token"`
 	BaseURL      types.String `tfsdk:"base_url"`
+	ChangeReason types.String `tfsdk:"change_reason"`
 }
 
 func (p *featureflipProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -55,6 +56,14 @@ func (p *featureflipProvider) Schema(_ context.Context, _ provider.SchemaRequest
 				Optional:    true,
 				Description: "API base URL. Defaults to https://api.featureflip.io. May also be set via FEATUREFLIP_BASE_URL.",
 			},
+			"change_reason": schema.StringAttribute{
+				Optional: true,
+				Description: "Why this run makes its changes. Sent with every write and recorded in the audit log. Required when a " +
+					"write reaches an environment with `require_change_reason` set (directly, or through a project-wide change " +
+					"such as a segment or a flag archive/delete); without it those writes fail with change_reason_required. " +
+					"Pass a new reason each run, e.g. `change_reason = var.change_reason`. At most 2048 characters (longer is " +
+					"truncated); no control characters other than tab and newline. May also be set via FEATUREFLIP_CHANGE_REASON.",
+			},
 		},
 	}
 }
@@ -66,7 +75,7 @@ func (p *featureflipProvider) Configure(ctx context.Context, req provider.Config
 		return
 	}
 
-	for name, v := range map[string]types.String{"organization": cfg.Organization, "token": cfg.Token, "base_url": cfg.BaseURL} {
+	for name, v := range map[string]types.String{"organization": cfg.Organization, "token": cfg.Token, "base_url": cfg.BaseURL, "change_reason": cfg.ChangeReason} {
 		if v.IsUnknown() {
 			resp.Diagnostics.AddAttributeError(path.Root(name), "Unknown provider configuration value",
 				fmt.Sprintf("%s depends on a value known only after apply. Set it statically or via its environment variable.", name))
@@ -82,6 +91,7 @@ func (p *featureflipProvider) Configure(ctx context.Context, req provider.Config
 	if baseURL == "" {
 		baseURL = "https://api.featureflip.io"
 	}
+	changeReason := stringOr(cfg.ChangeReason, os.Getenv("FEATUREFLIP_CHANGE_REASON"))
 
 	if org == "" {
 		resp.Diagnostics.AddAttributeError(path.Root("organization"), "Missing organization",
@@ -95,6 +105,9 @@ func (p *featureflipProvider) Configure(ctx context.Context, req provider.Config
 		resp.Diagnostics.AddAttributeError(path.Root("token"), "Invalid API token",
 			"Featureflip tokens start with ffs_ (service token) or ffp_ (personal access token).")
 	}
+	if err := checkChangeReason(changeReason); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("change_reason"), "Invalid change_reason", err.Error())
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -104,6 +117,7 @@ func (p *featureflipProvider) Configure(ctx context.Context, req provider.Config
 		resp.Diagnostics.AddAttributeError(path.Root("base_url"), "Invalid base_url", err.Error())
 		return
 	}
+	c.ChangeReason = changeReason
 	if _, err := c.GetOrganization(ctx, org); err != nil {
 		resp.Diagnostics.AddError("Featureflip authentication failed",
 			fmt.Sprintf("GET /orgs/%s against %s failed: %s\n\nVerify the token is valid (not revoked or expired), that the organization slug is correct, and that the token belongs to this organization.", org, baseURL, err))

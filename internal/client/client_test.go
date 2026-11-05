@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -240,5 +241,75 @@ func TestHasCode(t *testing.T) {
 				t.Errorf("HasCode(%v, %q) = %v, want %v", tt.err, tt.code, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDoSendsChangeReasonOnWritesOnly(t *testing.T) {
+	const reason = "Roll back 50% + retry — INC-42\nsecond line"
+	got := map[string][]string{}
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got[r.Method] = r.Header.Values("X-Intent-Reason")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	c.ChangeReason = reason
+
+	for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if err := c.do(context.Background(), m, "/orgs/acme/projects/p", nil, nil, nil); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+	}
+	if len(got[http.MethodGet]) != 0 {
+		t.Errorf("GET sent X-Intent-Reason %q; reads must not carry it", got[http.MethodGet])
+	}
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if len(got[m]) != 1 {
+			t.Fatalf("%s: X-Intent-Reason = %q, want one value", m, got[m])
+		}
+		// The API decodes with Uri.UnescapeDataString, which (like PathUnescape)
+		// keeps "+" literal, so the reason must round-trip through it.
+		decoded, err := url.PathUnescape(got[m][0])
+		if err != nil {
+			t.Fatalf("%s: header %q is not percent-encoded: %v", m, got[m][0], err)
+		}
+		if decoded != reason {
+			t.Errorf("%s: header decodes to %q, want %q", m, decoded, reason)
+		}
+	}
+}
+
+func TestDoOmitsChangeReasonWhenUnset(t *testing.T) {
+	var present bool
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, present = r.Header["X-Intent-Reason"]
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err := c.do(context.Background(), http.MethodPut, "/orgs/acme/projects/p", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Error("X-Intent-Reason sent although no change reason is configured")
+	}
+}
+
+func TestChangeReasonRequiredErrorNamesTheSetting(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"error":"change_reason_required","message":"A change reason is required for changes to environment 'production'."}`))
+	}))
+	err := c.do(context.Background(), http.MethodPut, "/orgs/acme/projects/p/flags/f/environments/production", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"422", "change_reason_required", "production", "change_reason", "FEATUREFLIP_CHANGE_REASON"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestOtherErrorsCarryNoChangeReasonHint(t *testing.T) {
+	err := (&APIError{StatusCode: 422, Code: "validation_failed", Message: "bad"}).Error()
+	if strings.Contains(err, "change_reason") {
+		t.Errorf("hint leaked into an unrelated error: %q", err)
 	}
 }

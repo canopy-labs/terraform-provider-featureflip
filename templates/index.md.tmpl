@@ -23,6 +23,43 @@ Set the token via the `FEATUREFLIP_TOKEN` environment variable rather than in co
 
 {{tffile "examples/provider/provider.tf"}}
 
+## Change reasons and critical environments
+
+An environment with `require_change_reason` set (Business plan and above) refuses any write that
+changes its flags unless the request carries a change reason, which is recorded in the audit log.
+Project-wide writes are refused too while *any* environment in the project requires one: segments,
+variations, flag archive/restore/delete, a `client_side_visible` change, and deleting the project
+itself (so `terraform destroy` as well). A refused write fails with `change_reason_required`.
+
+On a Business plan a new project's `production` environment starts with `require_change_reason`
+set, including a project created by `featureflip_project`.
+
+Set the reason on the provider, and pass a new one each run:
+
+```terraform
+variable "change_reason" {
+  type    = string
+  default = null
+}
+
+provider "featureflip" {
+  organization  = "acme-corp"
+  change_reason = var.change_reason
+}
+```
+
+```shell
+terraform apply -var 'change_reason=Roll out new checkout to EU (CHG-1234)'
+```
+
+Or set `FEATUREFLIP_CHANGE_REASON` in CI. The reason goes with every write in the run, including
+writes to environments that don't require one.
+
+`featureflip_environment` manages the setting through `require_change_reason` and
+`require_confirmation`. Leave either out and Terraform won't touch what is set in the dashboard.
+Turning either one off needs a token with the Admin or Owner role, and a change reason.
+`require_confirmation` only affects the dashboard.
+
 ## Upgrading to v0.4.0
 
 v0.4.0 adds three lifecycle attributes: `owner_email` and `permanent` on `featureflip_feature_flag`,

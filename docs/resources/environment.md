@@ -37,6 +37,8 @@ resource "featureflip_environment" "qa" {
 ### Optional
 
 - `color` (String) Display color, e.g. #ff5500.
+- `require_change_reason` (Boolean) Require a change reason on every write that changes flags in this environment, and on project-wide writes (segments, variations, flag archive/restore/delete) in its project. Business plan and above. Writes without one are refused, so set the provider's `change_reason` when this is true. Turning it off needs the Admin or Owner role and a change reason. Omit to leave the value set in the dashboard unchanged.
+- `require_confirmation` (Boolean) Ask dashboard users to type the environment key before a change lands. Dashboard only: the API, and so Terraform, is not asked. Turning it off needs the Admin or Owner role and a change reason. Omit to leave the value set in the dashboard unchanged.
 - `sort_order` (Number)
 
 ### Read-Only

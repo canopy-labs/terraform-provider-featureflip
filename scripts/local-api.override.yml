@@ -25,3 +25,9 @@ services:
       - Features__FlagOwnership=true
       - Features__FlagPermanence=true
       - Features__FlagExpiration=true
+      # Critical environments (required change reasons) are on in production for
+      # every organization; the fallback gate used here (no Featureflip SDK key)
+      # defaults to off. On a Business org a new project's production environment
+      # then starts with requireChangeReason, as it does in production, so the
+      # suite sends a change reason (seed.sh writes FEATUREFLIP_CHANGE_REASON).
+      - Features__CriticalEnvironments=true

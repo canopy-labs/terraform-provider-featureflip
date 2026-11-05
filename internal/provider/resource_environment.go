@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -29,12 +30,14 @@ var (
 func newEnvironmentResource() resource.Resource { return &environmentResource{} }
 
 type environmentModel struct {
-	ID        types.String `tfsdk:"id"`
-	Project   types.String `tfsdk:"project"`
-	Key       types.String `tfsdk:"key"`
-	Name      types.String `tfsdk:"name"`
-	Color     types.String `tfsdk:"color"`
-	SortOrder types.Int64  `tfsdk:"sort_order"`
+	ID                  types.String `tfsdk:"id"`
+	Project             types.String `tfsdk:"project"`
+	Key                 types.String `tfsdk:"key"`
+	Name                types.String `tfsdk:"name"`
+	Color               types.String `tfsdk:"color"`
+	SortOrder           types.Int64  `tfsdk:"sort_order"`
+	RequireChangeReason types.Bool   `tfsdk:"require_change_reason"`
+	RequireConfirmation types.Bool   `tfsdk:"require_confirmation"`
 }
 
 func (r *environmentResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -68,18 +71,46 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Default:    int64default.StaticInt64(0),
 				Validators: []validator.Int64{int64validator.Between(-2147483648, 2147483647)},
 			},
+			"require_change_reason": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Require a change reason on every write that changes flags in this environment, and on project-wide " +
+					"writes (segments, variations, flag archive/restore/delete) in its project. Business plan and above. Writes " +
+					"without one are refused, so set the provider's `change_reason` when this is true. Turning it off needs the " +
+					"Admin or Owner role and a change reason. Omit to leave the value set in the dashboard unchanged.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
+			"require_confirmation": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Description: "Ask dashboard users to type the environment key before a change lands. Dashboard only: the API, " +
+					"and so Terraform, is not asked. Turning it off needs the Admin or Owner role and a change reason. Omit " +
+					"to leave the value set in the dashboard unchanged.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
 		},
 	}
 }
 
+// configuredBool is the value to send for an Optional+Computed setting: the
+// configured one, or nil (leave it to the API) when the config omits it.
+func configuredBool(v types.Bool) *bool {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
+	}
+	return v.ValueBoolPointer()
+}
+
 func environmentToModel(project string, e *client.Environment) environmentModel {
 	return environmentModel{
-		ID:        types.StringValue(e.ID),
-		Project:   types.StringValue(project),
-		Key:       types.StringValue(e.Key),
-		Name:      types.StringValue(e.Name),
-		Color:     types.StringPointerValue(e.Color),
-		SortOrder: types.Int64Value(e.SortOrder),
+		ID:                  types.StringValue(e.ID),
+		Project:             types.StringValue(project),
+		Key:                 types.StringValue(e.Key),
+		Name:                types.StringValue(e.Name),
+		Color:               types.StringPointerValue(e.Color),
+		SortOrder:           types.Int64Value(e.SortOrder),
+		RequireChangeReason: types.BoolValue(e.RequireChangeReason),
+		RequireConfirmation: types.BoolValue(e.RequireConfirmation),
 	}
 }
 
@@ -90,10 +121,12 @@ func (r *environmentResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 	e, err := r.client.CreateEnvironment(ctx, plan.Project.ValueString(), client.CreateEnvironmentRequest{
-		Key:       plan.Key.ValueString(),
-		Name:      plan.Name.ValueString(),
-		Color:     plan.Color.ValueStringPointer(),
-		SortOrder: plan.SortOrder.ValueInt64(),
+		Key:                 plan.Key.ValueString(),
+		Name:                plan.Name.ValueString(),
+		Color:               plan.Color.ValueStringPointer(),
+		SortOrder:           plan.SortOrder.ValueInt64(),
+		RequireChangeReason: configuredBool(plan.RequireChangeReason),
+		RequireConfirmation: configuredBool(plan.RequireConfirmation),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Creating featureflip_environment %q failed", plan.Key.ValueString()), err.Error())
@@ -121,15 +154,20 @@ func (r *environmentResource) Read(ctx context.Context, req resource.ReadRequest
 }
 
 func (r *environmentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan environmentModel
+	var plan, cfg environmentModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// The critical settings come from config, not the plan: an omitted one is
+	// carried in the plan from state, and resending it would count as setting it.
 	err := r.client.UpdateEnvironment(ctx, plan.Project.ValueString(), plan.Key.ValueString(), client.UpdateEnvironmentRequest{
-		Name:      plan.Name.ValueString(),
-		Color:     plan.Color.ValueStringPointer(),
-		SortOrder: plan.SortOrder.ValueInt64(),
+		Name:                plan.Name.ValueString(),
+		Color:               plan.Color.ValueStringPointer(),
+		SortOrder:           plan.SortOrder.ValueInt64(),
+		RequireChangeReason: configuredBool(cfg.RequireChangeReason),
+		RequireConfirmation: configuredBool(cfg.RequireConfirmation),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Updating featureflip_environment %q failed", plan.Key.ValueString()), err.Error())
