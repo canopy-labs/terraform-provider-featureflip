@@ -50,5 +50,9 @@ FEATUREFLIP_TOKEN=$FF_TOKEN
 FEATUREFLIP_ACC_OWNER_EMAIL=$EMAIL
 # That member's personal access token, for the creator-as-owner and upgrade tests.
 FEATUREFLIP_ACC_MEMBER_TOKEN=$MEMBER_TOKEN
+# New projects start with a critical production environment (see
+# local-api.override.yml), so every write in the suite carries a reason, as a
+# Business-plan configuration in production has to.
+FEATUREFLIP_CHANGE_REASON="terraform acceptance tests"
 EOF
 echo "Seeded org '$SLUG' — wrote .env.acceptance"

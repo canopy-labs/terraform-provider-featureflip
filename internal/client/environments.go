@@ -6,24 +6,33 @@ import (
 )
 
 type Environment struct {
-	ID        string  `json:"id"`
-	Key       string  `json:"key"`
-	Name      string  `json:"name"`
-	Color     *string `json:"color"`
-	SortOrder int64   `json:"sortOrder"`
+	ID                  string  `json:"id"`
+	Key                 string  `json:"key"`
+	Name                string  `json:"name"`
+	Color               *string `json:"color"`
+	SortOrder           int64   `json:"sortOrder"`
+	RequireChangeReason bool    `json:"requireChangeReason"`
+	RequireConfirmation bool    `json:"requireConfirmation"`
 }
 
+// The two critical-environment settings are pointers: nil is sent as null,
+// which means false on create and leave-unchanged on update.
+
 type CreateEnvironmentRequest struct {
-	Key       string  `json:"key"`
-	Name      string  `json:"name"`
-	Color     *string `json:"color"`
-	SortOrder int64   `json:"sortOrder"`
+	Key                 string  `json:"key"`
+	Name                string  `json:"name"`
+	Color               *string `json:"color"`
+	SortOrder           int64   `json:"sortOrder"`
+	RequireChangeReason *bool   `json:"requireChangeReason"`
+	RequireConfirmation *bool   `json:"requireConfirmation"`
 }
 
 type UpdateEnvironmentRequest struct {
-	Name      string  `json:"name"`
-	Color     *string `json:"color"`
-	SortOrder int64   `json:"sortOrder"`
+	Name                string  `json:"name"`
+	Color               *string `json:"color"`
+	SortOrder           int64   `json:"sortOrder"`
+	RequireChangeReason *bool   `json:"requireChangeReason"`
+	RequireConfirmation *bool   `json:"requireConfirmation"`
 }
 
 func (c *Client) CreateEnvironment(ctx context.Context, project string, req CreateEnvironmentRequest) (*Environment, error) {

@@ -42,10 +42,16 @@ func testAccUseMemberToken(t *testing.T) string {
 // testAccClient talks to the API outside Terraform, the way a dashboard edit would.
 func testAccClient(t *testing.T) *client.Client {
 	t.Helper()
-	c, err := client.New(os.Getenv("FEATUREFLIP_BASE_URL"), os.Getenv("FEATUREFLIP_TOKEN"), os.Getenv("FEATUREFLIP_ORGANIZATION"), "acctest")
+	return testAccClientWithToken(t, os.Getenv("FEATUREFLIP_TOKEN"))
+}
+
+func testAccClientWithToken(t *testing.T, token string) *client.Client {
+	t.Helper()
+	c, err := client.New(os.Getenv("FEATUREFLIP_BASE_URL"), token, os.Getenv("FEATUREFLIP_ORGANIZATION"), "acctest")
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.ChangeReason = os.Getenv("FEATUREFLIP_CHANGE_REASON")
 	return c
 }
 
@@ -75,13 +81,15 @@ func mustDo(t *testing.T, what string, err error) {
 // creator-as-owner default, an owner change, a permanent marker, a project
 // default lifetime, and an owner on an archived flag.
 func TestAccLifecycle_upgradeFromV030(t *testing.T) {
+	adminToken := os.Getenv("FEATUREFLIP_TOKEN")
 	member := testAccUseMemberToken(t)
 	proj := acctest.RandomWithPrefix("tf-acc-proj")
-	config := fmt.Sprintf(`
+	project := fmt.Sprintf(`
 resource "featureflip_project" "p" {
   key  = %q
   name = "Upgrade Acc"
-}
+}`, proj)
+	config := project + `
 resource "featureflip_feature_flag" "plain" {
   project = featureflip_project.p.key
   key     = "plain"
@@ -107,15 +115,32 @@ resource "featureflip_feature_flag" "retired" {
   name     = "Retired"
   type     = "Boolean"
   archived = true
-}`, proj)
+}`
+	v030 := map[string]resource.ExternalProvider{
+		"featureflip": {Source: "registry.terraform.io/canopy-labs/featureflip", VersionConstraint: "0.3.0"},
+	}
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() { testAccPreCheck(t) },
 		Steps: []resource.TestStep{
 			{
-				ExternalProviders: map[string]resource.ExternalProvider{
-					"featureflip": {Source: "registry.terraform.io/canopy-labs/featureflip", VersionConstraint: "0.3.0"},
+				ExternalProviders: v030,
+				Config:            project,
+			},
+			{
+				// A new project on a Business plan starts with a production environment that requires
+				// a change reason, which v0.3.0 can't send: it could create these flags but not archive
+				// or delete them. Loosen it the way a project from before critical environments looks.
+				// Turning it off needs Admin, which the member token isn't.
+				PreConfig: func() {
+					c, ctx, off := testAccClientWithToken(t, adminToken), context.Background(), false
+					env, err := c.GetEnvironment(ctx, proj, "production")
+					mustDo(t, "read production", err)
+					mustDo(t, "loosen production", c.UpdateEnvironment(ctx, proj, "production", client.UpdateEnvironmentRequest{
+						Name: env.Name, Color: env.Color, SortOrder: env.SortOrder, RequireChangeReason: &off, RequireConfirmation: &off,
+					}))
 				},
-				Config: config,
+				ExternalProviders: v030,
+				Config:            config,
 				// The API made the token's user the owner of every flag v0.3.0 created.
 				Check: testAccCheckOwner(t, proj, "plain", member),
 			},

@@ -64,6 +64,9 @@ configuration plans with no changes after the upgrade:
   `seed.sh` also writes `FEATUREFLIP_ACC_OWNER_EMAIL` and `FEATUREFLIP_ACC_MEMBER_TOKEN` (the seeded
   user's email and personal access token). Tests that need them skip when they are unset; the upgrade
   test also downloads v0.3.0 from the Terraform Registry.
+  The local stack turns critical environments on, as production has them, so a new project's
+  `production` environment requires a change reason; `seed.sh` writes `FEATUREFLIP_CHANGE_REASON` so
+  the suite's writes carry one.
   Per-token rate limit is 300 req/min, so avoid running the full suite back-to-back; prefer
   `make testacc TESTARGS='-run TestAccX'`.
 

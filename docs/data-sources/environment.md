@@ -32,4 +32,6 @@ data "featureflip_environment" "production" {
 - `color` (String)
 - `id` (String) The ID of this resource.
 - `name` (String)
+- `require_change_reason` (Boolean) Whether writes that reach this environment need a change reason (the provider's `change_reason`).
+- `require_confirmation` (Boolean) Whether dashboard users must type the environment key before a change lands.
 - `sort_order` (Number)

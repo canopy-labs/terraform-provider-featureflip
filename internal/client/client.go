@@ -21,14 +21,22 @@ import (
 
 const apiPrefix = "/api/v1"
 
+// changeReasonRequired is the error code a write gets (422) when it reaches an
+// environment that requires a change reason and none was sent.
+const changeReasonRequired = "change_reason_required"
+
 type Client struct {
-	baseURL     *url.URL
-	token       string
-	Org         string
-	httpClient  *http.Client
-	userAgent   string
-	maxRetries  int
-	backoffBase time.Duration
+	baseURL *url.URL
+	token   string
+	Org     string
+	// ChangeReason, when set, is sent as X-Intent-Reason on every write, and
+	// recorded in the audit log. Environments that require a change reason
+	// refuse writes without one.
+	ChangeReason string
+	httpClient   *http.Client
+	userAgent    string
+	maxRetries   int
+	backoffBase  time.Duration
 }
 
 func New(baseURL, token, org, version string) (*Client, error) {
@@ -75,7 +83,20 @@ func (e *APIError) Error() string {
 		}
 		msg += " — " + strings.Join(parts, " | ")
 	}
+	if e.Code == changeReasonRequired {
+		msg += "\n\nThis change reaches an environment that requires a change reason. Set change_reason in the provider block " +
+			"(or the FEATUREFLIP_CHANGE_REASON environment variable) to why you are making it, for example " +
+			"change_reason = var.change_reason with terraform apply -var 'change_reason=...'."
+	}
 	return msg
+}
+
+// encodeChangeReason percent-encodes a reason for the X-Intent-Reason header,
+// which carries it as percent-encoded UTF-8. QueryEscape encodes a superset of
+// what encodeURIComponent does, apart from writing a space as "+", which the
+// API would keep as a literal plus.
+func encodeChangeReason(reason string) string {
+	return strings.ReplaceAll(url.QueryEscape(reason), "+", "%20")
 }
 
 func IsNotFound(err error) bool {
@@ -156,6 +177,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		req.Header.Set("User-Agent", c.userAgent)
 		if idemKey != "" {
 			req.Header.Set("Idempotency-Key", idemKey)
+		}
+		if c.ChangeReason != "" && method != http.MethodGet {
+			req.Header.Set("X-Intent-Reason", encodeChangeReason(c.ChangeReason))
 		}
 
 		resp, err := c.httpClient.Do(req)

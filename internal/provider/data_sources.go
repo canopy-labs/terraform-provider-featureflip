@@ -128,12 +128,14 @@ type environmentDataSource struct{ datasourceWithClient }
 func newEnvironmentDataSource() datasource.DataSource { return &environmentDataSource{} }
 
 type environmentDSModel struct {
-	ID        types.String `tfsdk:"id"`
-	Project   types.String `tfsdk:"project"`
-	Key       types.String `tfsdk:"key"`
-	Name      types.String `tfsdk:"name"`
-	Color     types.String `tfsdk:"color"`
-	SortOrder types.Int64  `tfsdk:"sort_order"`
+	ID                  types.String `tfsdk:"id"`
+	Project             types.String `tfsdk:"project"`
+	Key                 types.String `tfsdk:"key"`
+	Name                types.String `tfsdk:"name"`
+	Color               types.String `tfsdk:"color"`
+	SortOrder           types.Int64  `tfsdk:"sort_order"`
+	RequireChangeReason types.Bool   `tfsdk:"require_change_reason"`
+	RequireConfirmation types.Bool   `tfsdk:"require_confirmation"`
 }
 
 func (d *environmentDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -150,6 +152,14 @@ func (d *environmentDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 			"name":       schema.StringAttribute{Computed: true},
 			"color":      schema.StringAttribute{Computed: true},
 			"sort_order": schema.Int64Attribute{Computed: true},
+			"require_change_reason": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether writes that reach this environment need a change reason (the provider's `change_reason`).",
+			},
+			"require_confirmation": schema.BoolAttribute{
+				Computed:    true,
+				Description: "Whether dashboard users must type the environment key before a change lands.",
+			},
 		},
 	}
 }
@@ -166,12 +176,14 @@ func (d *environmentDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, environmentDSModel{
-		ID:        types.StringValue(e.ID),
-		Project:   cfg.Project,
-		Key:       types.StringValue(e.Key),
-		Name:      types.StringValue(e.Name),
-		Color:     types.StringPointerValue(e.Color),
-		SortOrder: types.Int64Value(e.SortOrder),
+		ID:                  types.StringValue(e.ID),
+		Project:             cfg.Project,
+		Key:                 types.StringValue(e.Key),
+		Name:                types.StringValue(e.Name),
+		Color:               types.StringPointerValue(e.Color),
+		SortOrder:           types.Int64Value(e.SortOrder),
+		RequireChangeReason: types.BoolValue(e.RequireChangeReason),
+		RequireConfirmation: types.BoolValue(e.RequireConfirmation),
 	})...)
 }
 
