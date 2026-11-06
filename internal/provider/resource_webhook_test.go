@@ -117,6 +117,60 @@ resource "featureflip_webhook" "test" {
 	})
 }
 
+func TestAccWebhook_slack(t *testing.T) {
+	const res = "featureflip_webhook.test"
+	cfg := `
+resource "featureflip_webhook" "test" {
+  name = "slack-changes"
+  url  = "https://hooks.slack.com/services/T000/B000/acctest"
+  type = "Slack"
+}`
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "type", "Slack"),
+					resource.TestCheckResourceAttrSet(res, "secret_id"),
+				),
+			},
+			{
+				// An imported Slack subscription must plan clean when config
+				// sets type = "Slack", not a destroy/create.
+				ResourceName:            res,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"secret"},
+			},
+			{
+				Config:             cfg,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
+		},
+	})
+}
+
+func TestAccWebhook_slackRejectsForeignURL(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "featureflip_webhook" "test" {
+  name = "slack-wrong-host"
+  url  = "https://example.com/hook"
+  type = "Slack"
+}`,
+				ExpectError: regexp.MustCompile(`hooks\.slack\.com`),
+			},
+		},
+	})
+}
+
 func TestAccWebhook_rejectsInvalidURL(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },

@@ -13,3 +13,16 @@ output "webhook_signing_secret" {
   value     = featureflip_webhook.flag_changes.secret
   sensitive = true
 }
+
+# A Slack incoming webhook. The URL is a credential, so keep it in a sensitive variable.
+variable "slack_webhook_url" {
+  type      = string
+  sensitive = true
+}
+
+resource "featureflip_webhook" "slack" {
+  name        = "flag-changes-slack"
+  type        = "Slack"
+  url         = var.slack_webhook_url
+  event_types = ["flag.toggled"]
+}

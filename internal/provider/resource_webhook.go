@@ -78,8 +78,8 @@ func (r *webhookResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:      true,
 				Computed:      true,
 				Default:       stringdefault.StaticString("GenericHttp"),
-				Description:   "Receiver type (the API's `provider` field, renamed because Terraform reserves that name). Only `GenericHttp` is available. Immutable.",
-				Validators:    []validator.String{stringvalidator.OneOf("GenericHttp")},
+				Description:   "Receiver type (the API's `provider` field, renamed because Terraform reserves that name). `GenericHttp` (the default) posts the signed JSON envelope; `Slack` posts to a Slack incoming webhook, whose `url` must start with `https://hooks.slack.com/services/` and is itself a credential, so pass it through a sensitive variable. Slack does not verify signatures, so `featureflip_webhook_secret` has no effect there. Immutable.",
+				Validators:    []validator.String{stringvalidator.OneOf("GenericHttp", "Slack")},
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"enabled": schema.BoolAttribute{
