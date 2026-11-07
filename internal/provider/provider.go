@@ -138,6 +138,7 @@ func (p *featureflipProvider) Resources(_ context.Context) []func() resource.Res
 		newSDKKeyResource,
 		newWebhookResource,
 		newWebhookSecretResource,
+		newFlagTriggerResource,
 	}
 }
 
