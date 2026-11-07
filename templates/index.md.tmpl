@@ -1,12 +1,12 @@
 ---
 page_title: "Featureflip Provider"
 description: |-
-  Manage Featureflip projects, environments, feature flags, targeting rules, segments, SDK keys, and webhooks as code.
+  Manage Featureflip projects, environments, feature flags, targeting rules, segments, SDK keys, webhooks, and flag triggers as code.
 ---
 
 # Featureflip Provider
 
-The Featureflip provider manages [Featureflip](https://featureflip.io) resources through the public Management API: projects, environments, feature flags (including variations and per-environment targeting), user segments, SDK keys, and outbound webhook subscriptions.
+The Featureflip provider manages [Featureflip](https://featureflip.io) resources through the public Management API: projects, environments, feature flags (including variations and per-environment targeting), user segments, SDK keys, outbound webhook subscriptions, and flag triggers that let a monitoring tool turn a flag on or off.
 
 ## Authentication
 
