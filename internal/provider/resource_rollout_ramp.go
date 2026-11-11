@@ -116,9 +116,10 @@ func (r *rolloutRampResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"The ramp changes the rule as it goes. If `featureflip_flag_environment` manages the same rule, add its " +
 			"`rollout_percentage` to that resource's `lifecycle.ignore_changes` (for a default-rule ramp, `strategy` and " +
 			"`default_variation`), or the next apply undoes the ramp's progress, and editing the rule by hand pauses the " +
-			"ramp. Deleting the rule ends the ramp, and the next plan starts a new one. Any apply that " +
-			"changes that `featureflip_flag_environment` rewrites every rule, so it pauses a running ramp on the flag; " +
-			"resume it from the app or the MCP server's manage_rollout_ramp.\n\n" +
+			"ramp. Deleting the rule ends the ramp, and the next plan starts a new one. `featureflip_flag_environment` " +
+			"writes only the rules whose configuration changed, so editing another rule leaves the ramp running; " +
+			"changing the ramped rule itself pauses it, as a hand edit does. Resume it from the app or the MCP " +
+			"server's manage_rollout_ramp.\n\n" +
 			"Import with `<project>/<flag>/<environment>/<ramp-id>`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{

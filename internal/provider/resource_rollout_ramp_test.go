@@ -9,7 +9,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
-func testAccRolloutRampConfig(proj, abortPercent, description string) string {
+// description is the ramped rule's; otherDescription belongs to a second rule.
+func testAccRolloutRampConfig(proj, abortPercent, description, otherDescription string) string {
 	return fmt.Sprintf(`
 resource "featureflip_project" "test" {
   key  = %q
@@ -42,6 +43,13 @@ resource "featureflip_flag_environment" "test" {
     condition_groups = [{
       operator   = "And"
       conditions = [{ attribute = "plan", operator = "Equals", values = ["beta"] }]
+    }]
+  }, {
+    description = %q
+    variation   = "true"
+    condition_groups = [{
+      operator   = "And"
+      conditions = [{ attribute = "plan", operator = "Equals", values = ["staff"] }]
     }]
   }]
 
@@ -78,7 +86,7 @@ resource "featureflip_rollout_ramp" "default" {
   ]
 
   depends_on = [featureflip_flag_environment.test]
-}`, proj, description, abortPercent)
+}`, proj, description, otherDescription, abortPercent)
 }
 
 func TestAccRolloutRamp_lifecycle(t *testing.T) {
@@ -95,7 +103,7 @@ func TestAccRolloutRamp_lifecycle(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccRolloutRampConfig(proj, "null", "beta"),
+				Config: testAccRolloutRampConfig(proj, "null", "beta", "staff"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr(rule, "status", "Running"),
 					resource.TestCheckResourceAttr(rule, "current_step_index", "0"),
@@ -110,7 +118,7 @@ func TestAccRolloutRamp_lifecycle(t *testing.T) {
 			},
 			{
 				// The ramp's own progress is not drift, and abort_percent changes in place.
-				Config: testAccRolloutRampConfig(proj, "0", "beta"),
+				Config: testAccRolloutRampConfig(proj, "0", "beta", "staff"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					checkAttrIs(rule, "id", &ruleRampID),
 					resource.TestCheckResourceAttr(rule, "abort_percent", "0"),
@@ -118,9 +126,19 @@ func TestAccRolloutRamp_lifecycle(t *testing.T) {
 				),
 			},
 			{
-				// Editing the flag environment plans every rule id unknown. That must not
-				// replace the ramp, but the rewrite of its rule pauses it.
-				Config: testAccRolloutRampConfig(proj, "0", "beta users"),
+				// Editing another rule plans every rule id unknown. That must not replace
+				// the ramp, and the ramped rule is not rewritten, so the ramp keeps running.
+				Config: testAccRolloutRampConfig(proj, "0", "beta", "staff only"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkAttrIs(rule, "id", &ruleRampID),
+					resource.TestCheckResourceAttrPair(rule, "rule_id", "featureflip_flag_environment.test", "rules.0.id"),
+					resource.TestCheckResourceAttr(rule, "status", "Running"),
+					resource.TestCheckResourceAttr(def, "status", "Running"),
+				),
+			},
+			{
+				// Editing the ramped rule itself pauses the ramp, as a hand edit does.
+				Config: testAccRolloutRampConfig(proj, "0", "beta users", "staff only"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					checkAttrIs(rule, "id", &ruleRampID),
 					resource.TestCheckResourceAttrPair(rule, "rule_id", "featureflip_flag_environment.test", "rules.0.id"),

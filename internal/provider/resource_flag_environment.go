@@ -281,6 +281,12 @@ func (r *flagEnvironmentResource) apply(ctx context.Context, plan *flagEnvModel,
 		finalIDs := make([]string, 0, len(inputs))
 		for i, in := range inputs {
 			if i < len(server) {
+				// An unchanged rule is not written: every rule PUT counts as a
+				// manual edit and pauses a running rollout ramp on that rule.
+				if ruleUnchanged(server[i], in) {
+					finalIDs = append(finalIDs, server[i].ID)
+					continue
+				}
 				if err := r.client.UpdateRule(ctx, project, flag, env, server[i].ID, in); err != nil {
 					diags.AddError(fmt.Sprintf("Updating targeting rule %d for %s/%s/%s failed", i, project, flag, env), err.Error())
 					return
@@ -335,6 +341,45 @@ func (r *flagEnvironmentResource) apply(ctx context.Context, plan *flagEnvModel,
 		}
 	}
 	plan.Enabled = types.BoolValue(cfg.IsEnabled)
+}
+
+// ruleUnchanged reports whether the server rule already holds what in would
+// write. The API returns an absent description as "" and does not keep
+// condition-group or condition order, so those compare loosely. Anything it
+// can't prove equal counts as changed, which only costs a redundant PUT.
+func ruleUnchanged(server client.TargetingRule, in client.RuleInput) bool {
+	deref := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	if deref(server.Description) != deref(in.Description) || server.VariationID != in.VariationID {
+		return false
+	}
+	if (server.RolloutPercentage == nil) != (in.RolloutPercentage == nil) ||
+		(in.RolloutPercentage != nil && *server.RolloutPercentage != *in.RolloutPercentage) {
+		return false
+	}
+	if (server.UserSegmentID == nil) != (in.UserSegmentID == nil) ||
+		(in.UserSegmentID != nil && *server.UserSegmentID != *in.UserSegmentID) {
+		return false
+	}
+	if len(server.ConditionGroups) != len(in.ConditionGroups) {
+		return false
+	}
+	got := reorderConditionGroupsLike(in.ConditionGroups, server.ConditionGroups)
+	for i, want := range in.ConditionGroups {
+		if got[i].Operator != want.Operator || len(got[i].Conditions) != len(want.Conditions) {
+			return false
+		}
+		for j := range want.Conditions {
+			if !conditionsEqual(got[i].Conditions[j], want.Conditions[j]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (r *flagEnvironmentResource) ruleInput(ctx context.Context, project, flag string, m ruleModel, varIDByKey, segIDByKey map[string]string, diags *diag.Diagnostics) (client.RuleInput, bool) {
