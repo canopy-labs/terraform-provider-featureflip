@@ -173,11 +173,13 @@ func (r *flagEnvironmentResource) Schema(_ context.Context, _ resource.SchemaReq
 
 func flagEnvID(project, flag, env string) string { return project + "/" + flag + "/" + env }
 
-// variationMaps returns key→id and id→key lookups for a flag's variations.
-func (r *flagEnvironmentResource) variationMaps(ctx context.Context, project, flag string) (map[string]string, map[string]string, error) {
+// variationMaps returns key→id and id→key lookups for a flag's variations, and
+// the id of the variation the server falls back to when the environment has no
+// configuration yet (see unconfiguredVariationID).
+func (r *flagEnvironmentResource) variationMaps(ctx context.Context, project, flag string) (map[string]string, map[string]string, string, error) {
 	f, err := r.client.GetFlag(ctx, project, flag)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	idByKey := make(map[string]string, len(f.Variations))
 	keyByID := make(map[string]string, len(f.Variations))
@@ -185,7 +187,28 @@ func (r *flagEnvironmentResource) variationMaps(ctx context.Context, project, fl
 		idByKey[v.Key] = v.ID
 		keyByID[v.ID] = v.Key
 	}
-	return idByKey, keyByID, nil
+	return idByKey, keyByID, serverDefaultVariationID(f), nil
+}
+
+// unconfiguredVariationID is what the API reports as defaultVariationId for an
+// environment that has no configuration for the flag yet: one created after the
+// flag. Sending it back is a 400, so apply substitutes serverDefaultVariationID.
+const unconfiguredVariationID = "00000000-0000-0000-0000-000000000000"
+
+// serverDefaultVariationID mirrors the server's FeatureFlag.SelectDefaultVariation:
+// a boolean flag's "false" variation, otherwise the first one.
+func serverDefaultVariationID(f *client.Flag) string {
+	if f.Type == "Boolean" {
+		for _, v := range f.Variations {
+			if v.Key == "false" {
+				return v.ID
+			}
+		}
+	}
+	if len(f.Variations) > 0 {
+		return f.Variations[0].ID
+	}
+	return ""
 }
 
 // apply converges the server to the plan and fills computed fields in *plan.
@@ -193,7 +216,7 @@ func (r *flagEnvironmentResource) variationMaps(ctx context.Context, project, fl
 func (r *flagEnvironmentResource) apply(ctx context.Context, plan *flagEnvModel, diags *diag.Diagnostics) {
 	project, flag, env := plan.Project.ValueString(), plan.Flag.ValueString(), plan.Environment.ValueString()
 
-	varIDByKey, varKeyByID, err := r.variationMaps(ctx, project, flag)
+	varIDByKey, varKeyByID, fallbackVarID, err := r.variationMaps(ctx, project, flag)
 	if err != nil {
 		diags.AddError(fmt.Sprintf("Reading flag %q for featureflip_flag_environment failed", flag), err.Error())
 		return
@@ -206,6 +229,9 @@ func (r *flagEnvironmentResource) apply(ctx context.Context, plan *flagEnvModel,
 
 	// --- fallthrough config PUT ---
 	defaultVarID := cfg.DefaultVariationID
+	if defaultVarID == "" || defaultVarID == unconfiguredVariationID {
+		defaultVarID = fallbackVarID
+	}
 	if !plan.DefaultVariation.IsNull() && !plan.DefaultVariation.IsUnknown() {
 		id, ok := varIDByKey[plan.DefaultVariation.ValueString()]
 		if !ok {
@@ -465,7 +491,7 @@ func (r *flagEnvironmentResource) Read(ctx context.Context, req resource.ReadReq
 	}
 	project, flag, env := state.Project.ValueString(), state.Flag.ValueString(), state.Environment.ValueString()
 
-	_, varKeyByID, err := r.variationMaps(ctx, project, flag)
+	_, varKeyByID, _, err := r.variationMaps(ctx, project, flag)
 	if client.IsNotFound(err) {
 		resp.State.RemoveResource(ctx)
 		return

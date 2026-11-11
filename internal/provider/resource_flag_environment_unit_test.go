@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -144,5 +145,64 @@ func TestFlagEnvironmentUpdateWritesOnlyChangedRules(t *testing.T) {
 	}
 	if rules[0].ID.ValueString() != "ramped" || rules[1].ID.ValueString() != "other" {
 		t.Errorf("rule ids = %s, %s; want ramped, other", rules[0].ID, rules[1].ID)
+	}
+}
+
+// An environment created after its flag has no configuration for it yet, and the
+// API reports defaultVariationId as the empty GUID. Sending that back was a 400
+// ("Default variation ID is required"), so a config without default_variation
+// could not be applied. The server's own default goes out instead.
+func TestFlagEnvironmentCreateOnUnconfiguredEnvironmentSendsTheServerDefault(t *testing.T) {
+	const env = "/projects/p/flags/f/environments/acctest"
+	gets := 0
+	api, c := newFakeAPI(t, map[string]func(http.ResponseWriter){
+		"GET /projects/p/flags/f": replyJSON(200, apiFlag("", false, false)),
+		"GET " + env: func(w http.ResponseWriter) {
+			gets++
+			id := unconfiguredVariationID
+			if gets > 1 {
+				id = "v2" // the PUT materialised the configuration
+			}
+			replyJSON(200, map[string]any{"isEnabled": false, "defaultVariationId": id, "strategy": "SingleVariation"})(w)
+		},
+		"PUT " + env: replyStatus(204),
+	})
+	r := &flagEnvironmentResource{resourceWithClient{client: c}}
+	s := resourceSchema(t, r)
+	plan := flagEnvModel{
+		ID: types.StringUnknown(), Project: types.StringValue("p"), Flag: types.StringValue("f"),
+		Environment: types.StringValue("acctest"), Enabled: types.BoolValue(false),
+		DefaultVariation: types.StringUnknown(), Strategy: types.StringUnknown(),
+		Prerequisites: types.ListNull(types.ObjectType{AttrTypes: prereqAttrTypes()}),
+		Rules:         types.ListNull(types.ObjectType{AttrTypes: ruleAttrTypes()}),
+	}
+	resp := resource.CreateResponse{State: tfsdkStateNull(s)}
+	r.Create(context.Background(), resource.CreateRequest{Plan: testPlan(t, s, plan)}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatal(resp.Diagnostics)
+	}
+	if body := api.bodies["PUT "+env]; !strings.Contains(body, `"defaultVariationId":"v2"`) {
+		t.Errorf("PUT body = %s, want the flag's false variation v2", body)
+	}
+	var got flagEnvModel
+	resp.Diagnostics.Append(resp.State.Get(context.Background(), &got)...)
+	if got.DefaultVariation.ValueString() != "false" {
+		t.Errorf("default_variation = %s, want false", got.DefaultVariation)
+	}
+}
+
+func TestServerDefaultVariationID(t *testing.T) {
+	vars := []client.Variation{{ID: "a", Key: "true"}, {ID: "b", Key: "false"}}
+	if got := serverDefaultVariationID(&client.Flag{Type: "Boolean", Variations: vars}); got != "b" {
+		t.Errorf("boolean = %q, want the false variation b", got)
+	}
+	if got := serverDefaultVariationID(&client.Flag{Type: "String", Variations: vars}); got != "a" {
+		t.Errorf("string = %q, want the first variation a", got)
+	}
+	if got := serverDefaultVariationID(&client.Flag{Type: "Boolean", Variations: vars[:1]}); got != "a" {
+		t.Errorf("boolean without false = %q, want the first variation a", got)
+	}
+	if got := serverDefaultVariationID(&client.Flag{Type: "Boolean"}); got != "" {
+		t.Errorf("no variations = %q, want empty", got)
 	}
 }
