@@ -137,12 +137,22 @@ func TestAccRolloutRamp_lifecycle(t *testing.T) {
 				),
 			},
 			{
-				// Editing the ramped rule itself pauses the ramp, as a hand edit does.
+				// Editing the ramped rule itself pauses the ramp, as a hand edit does. The ramp
+				// is not replaced, but its state still holds the status read during this
+				// plan's refresh: the pause is a side effect of another resource's write.
 				Config: testAccRolloutRampConfig(proj, "0", "beta users", "staff only"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					checkAttrIs(rule, "id", &ruleRampID),
 					resource.TestCheckResourceAttrPair(rule, "rule_id", "featureflip_flag_environment.test", "rules.0.id"),
+				),
+			},
+			{
+				// The next refresh reads the pause.
+				RefreshState: true,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkAttrIs(rule, "id", &ruleRampID),
 					resource.TestCheckResourceAttr(rule, "status", "Paused"),
+					resource.TestCheckResourceAttr(rule, "paused_reason", "RuleEditedManually"),
 				),
 			},
 			{
