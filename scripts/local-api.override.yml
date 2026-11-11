@@ -31,3 +31,6 @@ services:
       # then starts with requireChangeReason, as it does in production, so the
       # suite sends a change reason (seed.sh writes FEATUREFLIP_CHANGE_REASON).
       - Features__CriticalEnvironments=true
+      # Rollout ramps have launched, but the fallback gate defaults to off; the
+      # featureflip_rollout_ramp acceptance test needs it on.
+      - Features__RolloutRamps=true
