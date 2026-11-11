@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,14 +64,18 @@ type fakeAPI struct {
 	t      *testing.T
 	routes map[string]func(w http.ResponseWriter)
 	calls  []string
+	bodies map[string]string // last request body per route
 }
 
 func newFakeAPI(t *testing.T, routes map[string]func(w http.ResponseWriter)) (*fakeAPI, *client.Client) {
 	t.Helper()
-	f := &fakeAPI{t: t, routes: routes}
+	f := &fakeAPI{t: t, routes: routes, bodies: map[string]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		route := r.Method + " " + strings.TrimPrefix(r.URL.Path, "/api/v1/orgs/acme")
 		f.calls = append(f.calls, route)
+		if b, err := io.ReadAll(r.Body); err == nil && len(b) > 0 {
+			f.bodies[route] = string(b)
+		}
 		h, ok := f.routes[route]
 		if !ok {
 			t.Errorf("unexpected API call %s", route)
